@@ -708,7 +708,7 @@ void AvtVimbaCamera::initConfig()
   updateCameraInfo();
 
   RCLCPP_INFO(nh_->get_logger(),
-              "Found %d features on the camera, %u of which are writable. All features are exposed as ROS params",
+              "Found %ld features on the camera, %u of which are writable. All features are exposed as ROS params",
               writable_features_.size(), writable_count);
   on_init_config_ = false;
 }

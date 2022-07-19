@@ -66,9 +66,11 @@ private:
   std::string camera_info_url_;
   std::string frame_id_;
   bool use_measurement_time_;
+  bool publish_compressed_;
   int32_t ptp_offset_;
 
   image_transport::CameraPublisher camera_info_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
   
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_srv_;

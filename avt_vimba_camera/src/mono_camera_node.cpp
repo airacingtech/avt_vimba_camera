@@ -55,6 +55,13 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
   save_srv_ = create_service<avt_vimba_camera_msgs::srv::SaveSettings>("~/save_settings", std::bind(&MonoCameraNode::saveSrvCallback, this, _1, _2, _3));
 
   loadParams();
+
+  auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
+  qos.best_effort();
+
+  if (publish_compressed_) {
+    compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("~/image/compressed", qos);
+  }
 }
 
 MonoCameraNode::~MonoCameraNode()
@@ -71,6 +78,7 @@ void MonoCameraNode::loadParams()
   frame_id_ = this->declare_parameter("frame_id", "");
   use_measurement_time_ = this->declare_parameter("use_measurement_time", false);
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
+  publish_compressed_ = this->declare_parameter("publish_compressed", true);
 
   RCLCPP_INFO(this->get_logger(), "Parameters loaded");
 }
@@ -93,7 +101,8 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
   // if (camera_info_pub_.getNumSubscribers() > 0)
   {
     sensor_msgs::msg::Image img;
-    if (api_.frameToImage(vimba_frame_ptr, img))
+    sensor_msgs::msg::CompressedImage compressed_image;
+    if (api_.frameToImage(vimba_frame_ptr, img, compressed_image, publish_compressed_))
     {
       sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
       // Note: getCameraInfo() doesn't fill in header frame_id or stamp
@@ -111,6 +120,12 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
       img.header.frame_id = ci.header.frame_id;
       img.header.stamp = ci.header.stamp;
       camera_info_pub_.publish(img, ci);
+
+      if (publish_compressed_) {
+        compressed_image.header.frame_id = ci.header.frame_id;
+        compressed_image.header.stamp = ci.header.stamp;
+        compressed_pub->publish(compressed_image);
+      }
     }
     else
     {
@@ -146,7 +161,7 @@ void MonoCameraNode::stopSrvCallback(const std::shared_ptr<rmw_request_id_t> req
 
 void MonoCameraNode::loadSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
                                      const avt_vimba_camera_msgs::srv::LoadSettings::Request::SharedPtr req,
-                                     avt_vimba_camera_msgs::srv::LoadSettings::Response::SharedPtr res) 
+                                     avt_vimba_camera_msgs::srv::LoadSettings::Response::SharedPtr res)
 {
   (void)request_header;
   auto extension = req->input_path.substr(req->input_path.find_last_of(".") + 1);
@@ -154,8 +169,8 @@ void MonoCameraNode::loadSrvCallback(const std::shared_ptr<rmw_request_id_t> req
   {
     RCLCPP_WARN(this->get_logger(), "Invalid file extension. Only .xml is supported.");
     res->result = false;
-  } 
-  else 
+  }
+  else
   {
     res->result = cam_.loadCameraSettings(req->input_path);
   }
@@ -163,7 +178,7 @@ void MonoCameraNode::loadSrvCallback(const std::shared_ptr<rmw_request_id_t> req
 
 void MonoCameraNode::saveSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
                                      const avt_vimba_camera_msgs::srv::SaveSettings::Request::SharedPtr req,
-                                     avt_vimba_camera_msgs::srv::SaveSettings::Response::SharedPtr res) 
+                                     avt_vimba_camera_msgs::srv::SaveSettings::Response::SharedPtr res)
 {
   (void)request_header;
   auto extension = req->output_path.substr(req->output_path.find_last_of(".") + 1);
@@ -171,8 +186,8 @@ void MonoCameraNode::saveSrvCallback(const std::shared_ptr<rmw_request_id_t> req
   {
     RCLCPP_WARN(this->get_logger(), "Invalid file extension. Only .xml is supported.");
     res->result = false;
-  } 
-  else 
+  }
+  else
   {
     res->result = cam_.saveCameraSettings(req->output_path);
   }

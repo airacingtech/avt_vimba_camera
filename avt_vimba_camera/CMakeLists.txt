@@ -10,6 +10,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake_auto REQUIRED)
+find_package(OpenCV REQUIRED)
 
 ament_auto_find_build_dependencies()
 
@@ -31,6 +32,7 @@ function(add_dependencies_and_linkings arg)
     target_link_libraries(${arg}
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/64bit/libVimbaC.so
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/64bit/libVimbaCPP.so
+      ${OpenCV_LIBS}
     )
   elseif("${ARCH}" STREQUAL armv7)
     target_link_libraries(${arg}

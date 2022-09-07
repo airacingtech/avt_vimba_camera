@@ -111,7 +111,7 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
       {
         VmbUint64_t frame_timestamp;
         vimba_frame_ptr->GetTimestamp(frame_timestamp);
-        ci.header.stamp = rclcpp::Time(cam_.getTimestampRealTime(frame_timestamp)) + rclcpp::Duration(ptp_offset_, 0);
+        ci.header.stamp = rclcpp::Time(frame_timestamp);
       }
       else
       {

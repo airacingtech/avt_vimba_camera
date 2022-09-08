@@ -237,27 +237,40 @@ public:
     bool res = false;
     if (VmbErrorSuccess == err)
     {
-      res = sensor_msgs::fillImage(image, encoding, height, width, step, buffer_ptr);
-      if (publish_compressed){
-        // const auto debayer_start = std::chrono::high_resolution_clock::now();
+      bool PUB_DEBAYER = true;
 
+      if (PUB_DEBAYER) {
         const cv::Mat m(height, width, CV_8UC1, static_cast<uint8_t*>(buffer_ptr), step);
-        cv::Mat output_mat(height, width, CV_8UC3, step * 3);
+        image.height = height;
+        image.width = width;
+        image.encoding = "rgb8";
+        image.is_bigendian = false;
+        image.step = step * 3;
+        image.data = std::vector<uint8_t>(image.height * image.width * 3);
+
+        cv::Mat output_mat(image.height, image.width, CV_8UC3,
+            static_cast<uint8_t*>(image.data.data()), image.step);
         cv::ColorConversionCodes code = cv::COLOR_BayerBG2RGB;
         cv::demosaicing(m, output_mat, code);
-        
-        compressed_image.header = image.header;
-        compressed_image.format = "jpeg";
-        cv::imencode(".jpg", output_mat, compressed_image.data,
-          std::vector<int>{
-            cv::IMWRITE_JPEG_QUALITY, 90
-            // TODO: Add more parameters here
-          }
-        );
-        
-        // const auto debayer_end = std::chrono::high_resolution_clock::now();
-        // auto ms = std::chrono::duration_cast<std::chrono::microseconds>(debayer_end - debayer_start).count();
-        // RCLCPP_WARN(logger_, "image debayer took %lu microseconds", ms);
+        res = true;
+
+        if (publish_compressed){
+            // const auto debayer_start = std::chrono::high_resolution_clock::now();
+            compressed_image.header = image.header;
+            compressed_image.format = "jpeg";
+            cv::imencode(".jpg", output_mat, compressed_image.data,
+              std::vector<int>{
+                cv::IMWRITE_JPEG_QUALITY, 90
+                // TODO: Add more parameters here
+              }
+            );
+
+            // const auto debayer_end = std::chrono::high_resolution_clock::now();
+            // auto ms = std::chrono::duration_cast<std::chrono::microseconds>(debayer_end - debayer_start).count();
+            // RCLCPP_WARN(logger_, "image debayer took %lu microseconds", ms);
+        }
+      } else {
+        res = sensor_msgs::fillImage(image, encoding, height, width, step, buffer_ptr);
       }
     }
     else

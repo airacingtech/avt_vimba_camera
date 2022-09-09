@@ -961,14 +961,15 @@ void AvtVimbaCamera::updateCameraInfo()
     RCLCPP_ERROR(nh_->get_logger(), "Could not determine sensor pixel dimensions, camera_info will be wrong");
   }
 
-  ci.width = sensor_width;
-  ci.height = sensor_height;
-  ci.binning_x = binning_or_decimation_x;
-  ci.binning_y = binning_or_decimation_y;
+  ci.width = getImageWidth();
+  ci.height = getImageHeight();
+  ci.binning_x = 1;
+  ci.binning_y = 1;
 
   // ROI is in unbinned coordinates, need to scale up
-  ci.roi.width = getImageWidth() * binning_or_decimation_x;
-  ci.roi.height = getImageHeight() * binning_or_decimation_y;
+  binning_or_decimation_x = 1;
+  ci.roi.width = ci.width;
+  ci.roi.height = ci.height;
   ci.roi.x_offset = 0 * binning_or_decimation_x;
   ci.roi.y_offset = 0 * binning_or_decimation_y;
 

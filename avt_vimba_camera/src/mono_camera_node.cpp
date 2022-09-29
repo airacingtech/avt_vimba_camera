@@ -57,7 +57,7 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
   loadParams();
 
   auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
-  qos.best_effort();
+  qos.reliable()
 
   if (publish_compressed_) {
     compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("~/image/compressed", qos);

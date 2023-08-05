@@ -7,7 +7,7 @@
         <LoggingLevel Value="4" Description="All messages will be logged (Info, Error, Warning, Debug, Trace)" />
     </Logging>
 </SettingsStruct>
-<CameraSettings CameraID="DEV_000F315D39B4" CameraModel="Mako G-319C (9615)" FeatureCount="224">
+<CameraSettings CameraID="DEV_000F315D39B3" CameraModel="Mako G-319C (9615)" FeatureCount="224">
     <FeatureGroup Count="81">
         <Feature Name="AcquisitionFrameCount" Type="Integer" Access="R/W">1</Feature>
         <Feature Name="AcquisitionFrameRateAbs" Type="Float" Access="R/W">30.0</Feature>
@@ -74,8 +74,8 @@
         <Feature Name="OffsetX" Type="Integer" Access="R/W">0</Feature>
         <Feature Name="OffsetY" Type="Integer" Access="R/W">0</Feature>
         <Feature Name="PixelFormat" Type="Enumeration" Access="R/W">BayerRG8</Feature>
-        <Feature Name="PtpAcquisitionGateTime" Type="Integer" Access="R/W">0</Feature>
-        <Feature Name="PtpMode" Type="Enumeration" Access="R/W">Off</Feature>
+        <Feature Name="PtpAcquisitionGateTime" Type="Integer" Access="R/W">1675818210000000000</Feature>
+        <Feature Name="PtpMode" Type="Enumeration" Access="R/W">Slave</Feature>
         <Feature Name="RecorderPreEventCount" Type="Integer" Access="R/W">0</Feature>
         <Feature Name="ReverseX" Type="Boolean" Access="R/W">False</Feature>
         <Feature Name="ReverseY" Type="Boolean" Access="R/W">False</Feature>
@@ -165,7 +165,7 @@
         </Selector>
         <Selector Name="TriggerSelector" Type="Enumeration" SelectedFeatures="6">
             <SelectorCombination Entry="FrameStart" Feature="TriggerMode" Type="Enumeration">On</SelectorCombination>
-            <SelectorCombination Entry="FrameStart" Feature="TriggerSource" Type="Enumeration">Freerun</SelectorCombination>
+            <SelectorCombination Entry="FrameStart" Feature="TriggerSource" Type="Enumeration">FixedRate</SelectorCombination>
             <SelectorCombination Entry="FrameStart" Feature="TriggerActivation" Type="Enumeration">RisingEdge</SelectorCombination>
             <SelectorCombination Entry="FrameStart" Feature="TriggerOverlap" Type="Enumeration">Off</SelectorCombination>
             <SelectorCombination Entry="FrameStart" Feature="TriggerDelayAbs" Type="Float">0.000000</SelectorCombination>

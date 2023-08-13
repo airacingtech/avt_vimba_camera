@@ -287,22 +287,7 @@ void AvtVimbaCamera::frameCallback(const FramePtr vimba_frame_ptr)
   std::unique_lock<std::mutex> lock(config_mutex_);
   last_frame_sec = this->nh_->now().seconds();
   camera_state_ = OK;
-  // Create an output string stream to build the diagnostic message
-  std::ostringstream diagnostic_stream;
-  diagnostic_stream << "Camera operating normally";
-
-  // Retrieve the frame ID using the GetFrameID() method
-  VmbUint64_t frameID;
-  VmbErrorType frameIDError = vimba_frame_ptr->GetFrameID(frameID);
-
-  if (frameIDError == VmbErrorSuccess) {
-    diagnostic_stream << "\nFrame ID: " << frameID;
-  } else {
-    diagnostic_stream << "\nFailed to retrieve Frame ID";
-  }
-
-  // Assign the built message to diagnostic_msg_
-  diagnostic_msg_ = diagnostic_stream.str();
+  diagnostic_msg_ = "Camera operating normally";
 
   // Call the callback implemented by other classes
   std::thread thread_callback = std::thread(userFrameCallback, vimba_frame_ptr);

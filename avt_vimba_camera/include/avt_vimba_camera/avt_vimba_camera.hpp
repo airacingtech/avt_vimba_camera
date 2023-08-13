@@ -163,6 +163,10 @@ private:
   rcl_interfaces::msg::SetParametersResult parameterCallback(const std::vector<rclcpp::Parameter>& parameters);
   void updateCameraInfo();
   void getCurrentState(diagnostic_updater::DiagnosticStatusWrapper& stat);
+
+  double last_frame_sec = 0.0;
+  void timerCallback();
+  rclcpp::TimerBase::SharedPtr timer_;
 };
 }  // namespace avt_vimba_camera
 #endif

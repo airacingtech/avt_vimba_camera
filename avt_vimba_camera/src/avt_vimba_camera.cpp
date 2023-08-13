@@ -64,8 +64,16 @@ AvtVimbaCamera::AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node)
 
   updater_.setHardwareID("unknown");
   updater_.add(owner_node->get_name(), this, &AvtVimbaCamera::getCurrentState);
+  timer_ = nh_->create_wall_timer(std::chrono::milliseconds(1000), std::bind(&AvtVimbaCamera::timerCallback, this));
+  last_frame_sec = nh_->now().seconds();
 }
-
+void AvtVimbaCamera::timerCallback()
+{
+  if ( this->nh_->now().seconds() - last_frame_sec > 2)
+  {
+    RCLCPP_ERROR_STREAM(nh_->get_logger(), "Did not get frame after " << this->nh_->now().seconds() - last_frame_sec << " seconds");
+  }
+}
 void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_str, const std::string& frame_id,
                            const std::string& camera_info_url)
 {
@@ -277,8 +285,24 @@ CameraPtr AvtVimbaCamera::openCamera(const std::string& id_str)
 void AvtVimbaCamera::frameCallback(const FramePtr vimba_frame_ptr)
 {
   std::unique_lock<std::mutex> lock(config_mutex_);
+  last_frame_sec = this->nh_->now().seconds();
   camera_state_ = OK;
-  diagnostic_msg_ = "Camera operating normally";
+  // Create an output string stream to build the diagnostic message
+  std::ostringstream diagnostic_stream;
+  diagnostic_stream << "Camera operating normally";
+
+  // Retrieve the frame ID using the GetFrameID() method
+  VmbUint64_t frameID;
+  VmbErrorType frameIDError = vimba_frame_ptr->GetFrameID(frameID);
+
+  if (frameIDError == VmbErrorSuccess) {
+    diagnostic_stream << "\nFrame ID: " << frameID;
+  } else {
+    diagnostic_stream << "\nFailed to retrieve Frame ID";
+  }
+
+  // Assign the built message to diagnostic_msg_
+  diagnostic_msg_ = diagnostic_stream.str();
 
   // Call the callback implemented by other classes
   std::thread thread_callback = std::thread(userFrameCallback, vimba_frame_ptr);

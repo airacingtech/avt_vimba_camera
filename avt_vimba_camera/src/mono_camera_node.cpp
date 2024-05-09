@@ -107,16 +107,11 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
       sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
       // Note: getCameraInfo() doesn't fill in header frame_id or stamp
       ci.header.frame_id = frame_id_;
-      if (use_measurement_time_)
-      {
         VmbUint64_t frame_timestamp;
         vimba_frame_ptr->GetTimestamp(frame_timestamp);
-        ci.header.stamp = rclcpp::Time(frame_timestamp);
-      }
-      else
-      {
-        ci.header.stamp = ros_time;
-      }
+        ci.header.stamp = rclcpp::Time(cam_.getTimestampRealTime(frame_timestamp)) + rclcpp::Duration(ptp_offset_, 0);
+//std::cout << cam_.getTimestampRealTime(frame_timestamp) << std::endl;
+	ci.header.stamp = ros_time;
       img.header.frame_id = ci.header.frame_id;
       img.header.stamp = ci.header.stamp;
       camera_info_pub_.publish(img, ci);

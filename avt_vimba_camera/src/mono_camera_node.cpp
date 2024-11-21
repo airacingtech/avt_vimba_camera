@@ -96,14 +96,16 @@ void MonoCameraNode::start()
 void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 {
   rclcpp::Time ros_time = this->get_clock()->now();
-
+  // RCLCPP_INFO(this->get_logger(), "frameCallback start");
   // getNumSubscribers() is not yet supported in Foxy, will be supported in later versions
   // if (camera_info_pub_.getNumSubscribers() > 0)
   {
     sensor_msgs::msg::Image img;
     sensor_msgs::msg::CompressedImage compressed_image;
+    // RCLCPP_INFO(this->get_logger(), "frameToImage start");
     if (api_.frameToImage(vimba_frame_ptr, img, compressed_image, publish_compressed_))
     {
+      // RCLCPP_INFO(this->get_logger(), "frameToImage success");
       sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
       // Note: getCameraInfo() doesn't fill in header frame_id or stamp
       ci.header.frame_id = frame_id_;
@@ -127,6 +129,7 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
       RCLCPP_WARN_STREAM(this->get_logger(), "Function frameToImage returned 0. No image published.");
     }
   }
+  // RCLCPP_INFO(this->get_logger(), "frameCallback end");
 }
 
 void MonoCameraNode::startSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,

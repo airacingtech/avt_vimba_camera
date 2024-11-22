@@ -137,7 +137,7 @@ inline VmbErrorType Feature::GetValue( std::string &rStrValue ) const
     VmbErrorType    res;
     VmbUint32_t     nLength;
 
-    res = GetValue( (char * const)NULL, nLength );
+    res = GetValue( static_cast<char*>(nullptr), nLength );
     if ( VmbErrorSuccess == res )
     {
         if ( 0 != nLength )

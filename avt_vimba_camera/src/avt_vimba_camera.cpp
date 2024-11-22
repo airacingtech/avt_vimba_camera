@@ -576,7 +576,7 @@ bool AvtVimbaCamera::getFeatureValue(const std::string& feature_str, std::string
 template <typename Vimba_Type, typename Std_Type>
 void AvtVimbaCamera::configureFeature(const std::string& feature_str, const Vimba_Type& val_in, Std_Type& val_out)
 {
-  Vimba_Type actual_value;
+  Vimba_Type actual_value = val_in;  // Initialize with input value
 
   VmbErrorType return_value = setFeatureValue(feature_str, val_in);
   if (return_value == VmbErrorSuccess || return_value == VmbErrorInvalidValue)
@@ -690,8 +690,8 @@ void AvtVimbaCamera::initConfig()
   {
     on_init_config_ = true;
     RCLCPP_INFO(nh_->get_logger(), "Configuring camera:");
-    // Query all camera features to translate into ROS params
-    for (const FeaturePtr feature : features)
+    // Use const reference in the loop
+    for (const FeaturePtr& feature : features)
     {
       std::string feature_name = "";
       bool is_writable = false;

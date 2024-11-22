@@ -95,7 +95,7 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
     pub_ptr->publish(std::move(msg));
   };
   
-  timer_demo_ = this->create_wall_timer(1s, callback_demo);
+  // timer_demo_ = this->create_wall_timer(1s, callback_demo);
 }
 
 MonoCameraNode::~MonoCameraNode()
@@ -144,7 +144,7 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
       img.header.frame_id = ci.header.frame_id;
       img.header.stamp = ci.header.stamp;
       camera_info_pub_.publish(img, ci);
-      // publishImagePtr(std::make_shared<sensor_msgs::msg::Image>(img));
+      publishImagePtr(img);
 
       if (publish_compressed_) {
         compressed_image.header.frame_id = ci.header.frame_id;
@@ -160,36 +160,19 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 }
 
 
-void MonoCameraNode::publishImagePtr(sensor_msgs::msg::Image::SharedPtr image) {
+void MonoCameraNode::publishImagePtr(sensor_msgs::msg::Image & image) {
     auto pub_ptr = captured_pub.lock();
     if (!pub_ptr) {
         RCLCPP_ERROR(this->get_logger(), "Failed to lock publisher");
         return;
     }
-
-    // Borrow a loaned message from the publisher
-    auto loaned_msg = pub_ptr->borrow_loaned_message();
-    auto& msg = loaned_msg.get();
-
-    // Move the image data instead of copying
-    msg.header = std::move(image->header);
-    msg.height = image->height;
-    msg.width = image->width;
-    msg.encoding = std::move(image->encoding);
-    msg.is_bigendian = image->is_bigendian;
-    msg.step = image->step;
-    msg.data = std::move(image->data);
+    sensor_msgs::msg::Image::UniquePtr msg(new sensor_msgs::msg::Image(image));
 
     std::stringstream ss;
-    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(&msg);
-    
-    RCLCPP_INFO(this->get_logger(), 
-        "Publishing image: %dx%d, encoding: %s, address: %s",
-        msg.width, msg.height, 
-        msg.encoding.c_str(), ss.str().c_str());
-    
-    // Publish using move semantics
-    pub_ptr->publish(std::move(loaned_msg));
+    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    RCLCPP_INFO(this->get_logger(), "Published message with address: %s", 
+                ss.str().c_str());
+    pub_ptr->publish(std::move(msg));
 }
 
 void MonoCameraNode::startSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,

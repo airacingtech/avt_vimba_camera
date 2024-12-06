@@ -80,22 +80,6 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
   pub_demo_ = this->create_publisher<std_msgs::msg::Int32>("image/demo", qos);
   captured_pub_demo = pub_demo_;
   
-  auto callback_demo = [this]() -> void {
-    auto pub_ptr = captured_pub_demo.lock();
-    if (!pub_ptr) {
-      return;
-    }
-    static int32_t count = 0;
-    std_msgs::msg::Int32::UniquePtr msg(new std_msgs::msg::Int32());
-    msg->data = count++;
-    std::stringstream ss;
-    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
-    RCLCPP_INFO(this->get_logger(), "Published message with value: %d, and address: %s", 
-                msg->data, ss.str().c_str());
-    pub_ptr->publish(std::move(msg));
-  };
-  
-  // timer_demo_ = this->create_wall_timer(1s, callback_demo);
 }
 
 MonoCameraNode::~MonoCameraNode()

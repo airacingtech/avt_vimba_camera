@@ -82,6 +82,12 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
   pub_demo_ = this->create_publisher<std_msgs::msg::Int32>("image/demo", qos);
   captured_pub_demo = pub_demo_;
   
+  try {
+    this->start();
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Failed to start camera: %s", e.what());
+    throw;
+  }
 }
 
 MonoCameraNode::~MonoCameraNode()
@@ -105,12 +111,19 @@ void MonoCameraNode::loadParams()
 
 void MonoCameraNode::start()
 {
-  // Start Vimba & list all available cameras
-  api_.start();
+  RCLCPP_INFO(this->get_logger(), "Starting camera");
+  try {
+    // Start Vimba & list all available cameras
+    api_.start();
 
-  // Start camera
-  cam_.start(ip_, guid_, frame_id_, camera_info_url_);
-  cam_.startImaging();
+    // Start camera
+    cam_.start(ip_, guid_, frame_id_, camera_info_url_);
+    cam_.startImaging();
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Error starting camera: %s", e.what());
+    throw;
+  }
+  RCLCPP_INFO(this->get_logger(), "Camera started");
 }
 
 void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)

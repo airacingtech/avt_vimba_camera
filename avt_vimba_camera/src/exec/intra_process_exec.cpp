@@ -23,9 +23,6 @@ int main(int argc, char * argv[])
     executor.add_node(camera_node);
     executor.add_node(subscriber_node);
 
-    // Start the camera after adding to executor
-    camera_node->start();
-
     // Spin the executor
     executor.spin();
 

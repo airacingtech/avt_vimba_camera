@@ -41,6 +41,8 @@ using namespace std::chrono_literals;  // Add this for time literals
 
 using namespace std::placeholders;
 
+
+
 namespace avt_vimba_camera
 {
 MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
@@ -218,3 +220,5 @@ void MonoCameraNode::saveSrvCallback(const std::shared_ptr<rmw_request_id_t> req
   }
 }
 }  // namespace avt_vimba_camera
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(avt_vimba_camera::MonoCameraNode)

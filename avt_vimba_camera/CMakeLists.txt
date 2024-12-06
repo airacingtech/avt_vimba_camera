@@ -58,9 +58,18 @@ ament_auto_add_library(mono_camera_node SHARED
 )
 add_dependencies_and_linkings(mono_camera_node)
 
+# Register the component
+rclcpp_components_register_nodes(mono_camera_node 
+  "avt_vimba_camera::MonoCameraNode")
+
+
 ament_auto_add_library(image_subscriber_node SHARED
   src/image_subscriber_node.cpp
 )
+
+# Add this line after the library definition
+rclcpp_components_register_nodes(image_subscriber_node 
+  "avt_vimba_camera::ImageSubscriberNode")
 
 ament_auto_add_library(trigger_node SHARED
   src/trigger_node.cpp

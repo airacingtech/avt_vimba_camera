@@ -17,7 +17,7 @@ int main(int argc, char * argv[])
     auto subscriber_node = std::make_shared<avt_vimba_camera::ImageSubscriberNode>(options);
 
     // Create a single-threaded executor
-    rclcpp::executors::SingleThreadedExecutor executor;
+    rclcpp::executors::MultiThreadedExecutor executor;
 
     // Add both nodes to the executor
     executor.add_node(camera_node);

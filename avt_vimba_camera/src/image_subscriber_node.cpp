@@ -66,3 +66,7 @@ void ImageSubscriberNode::demoCallback(std_msgs::msg::Int32::UniquePtr msg)
 
 }  // namespace avt_vimba_camera
 
+
+// Add these lines at the end of the file
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(avt_vimba_camera::ImageSubscriberNode)

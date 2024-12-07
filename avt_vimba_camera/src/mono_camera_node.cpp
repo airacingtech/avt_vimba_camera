@@ -31,16 +31,22 @@
 /// THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <thread>
+#include <sstream>
 
 #include <avt_vimba_camera/mono_camera_node.hpp>
 #include <avt_vimba_camera_msgs/srv/load_settings.hpp>
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
+#include <chrono>
+using namespace std::chrono_literals;  // Add this for time literals
 
 using namespace std::placeholders;
 
+
+
 namespace avt_vimba_camera
 {
-MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
+MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
+: Node("camera", options), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
 {
   // Set the image publisher before streaming
   camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
@@ -57,10 +63,30 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
   loadParams();
 
   auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
-  qos.reliable();
+  qos.best_effort();
 
   if (publish_compressed_) {
-    compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("~/image/compressed", qos);
+    compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("image/compressed", qos);
+  }
+
+  rclcpp::PublisherOptions pub_options;
+  pub_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
+
+  image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
+      "image/ptr", 
+      qos,
+      pub_options
+  );
+  captured_pub = image_pub_;
+
+  pub_demo_ = this->create_publisher<std_msgs::msg::Int32>("image/demo", qos);
+  captured_pub_demo = pub_demo_;
+  
+  try {
+    this->start();
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Failed to start camera: %s", e.what());
+    throw;
   }
 }
 
@@ -80,41 +106,45 @@ void MonoCameraNode::loadParams()
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
   publish_compressed_ = this->declare_parameter("publish_compressed", true);
 
+  RCLCPP_INFO(this->get_logger(), "publish_compressed: %d", publish_compressed_);
   RCLCPP_INFO(this->get_logger(), "Parameters loaded");
 }
 
 void MonoCameraNode::start()
 {
-  // Start Vimba & list all available cameras
-  api_.start();
+  RCLCPP_INFO(this->get_logger(), "Starting camera");
+  try {
+    // Start Vimba & list all available cameras
+    api_.start();
 
-  // Start camera
-  cam_.start(ip_, guid_, frame_id_, camera_info_url_);
-  cam_.startImaging();
+    // Start camera
+    cam_.start(ip_, guid_, frame_id_, camera_info_url_);
+    cam_.startImaging();
+  } catch (const std::exception& e) {
+    RCLCPP_ERROR(this->get_logger(), "Error starting camera: %s", e.what());
+    throw;
+  }
+  RCLCPP_INFO(this->get_logger(), "Camera started");
 }
 
 void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 {
   rclcpp::Time ros_time = this->get_clock()->now();
-
-  // getNumSubscribers() is not yet supported in Foxy, will be supported in later versions
-  // if (camera_info_pub_.getNumSubscribers() > 0)
   {
     sensor_msgs::msg::Image img;
     sensor_msgs::msg::CompressedImage compressed_image;
     if (api_.frameToImage(vimba_frame_ptr, img, compressed_image, publish_compressed_))
     {
       sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
-      // Note: getCameraInfo() doesn't fill in header frame_id or stamp
       ci.header.frame_id = frame_id_;
         VmbUint64_t frame_timestamp;
         vimba_frame_ptr->GetTimestamp(frame_timestamp);
         ci.header.stamp = rclcpp::Time(cam_.getTimestampRealTime(frame_timestamp)) + rclcpp::Duration(ptp_offset_, 0);
-//std::cout << cam_.getTimestampRealTime(frame_timestamp) << std::endl;
-	ci.header.stamp = ros_time;
+	    ci.header.stamp = ros_time;
       img.header.frame_id = ci.header.frame_id;
       img.header.stamp = ci.header.stamp;
       camera_info_pub_.publish(img, ci);
+      publishImagePtr(img);
 
       if (publish_compressed_) {
         compressed_image.header.frame_id = ci.header.frame_id;
@@ -127,6 +157,22 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
       RCLCPP_WARN_STREAM(this->get_logger(), "Function frameToImage returned 0. No image published.");
     }
   }
+}
+
+
+void MonoCameraNode::publishImagePtr(sensor_msgs::msg::Image & image) {
+    auto pub_ptr = captured_pub.lock();
+    if (!pub_ptr) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to lock publisher");
+        return;
+    }
+    sensor_msgs::msg::Image::UniquePtr msg(new sensor_msgs::msg::Image(image));
+
+    std::stringstream ss;
+    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    RCLCPP_INFO(this->get_logger(), "Published message with address: %s", 
+                ss.str().c_str());
+    pub_ptr->publish(std::move(msg));
 }
 
 void MonoCameraNode::startSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
@@ -188,3 +234,5 @@ void MonoCameraNode::saveSrvCallback(const std::shared_ptr<rmw_request_id_t> req
   }
 }
 }  // namespace avt_vimba_camera
+#include "rclcpp_components/register_node_macro.hpp"
+RCLCPP_COMPONENTS_REGISTER_NODE(avt_vimba_camera::MonoCameraNode)

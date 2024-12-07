@@ -11,6 +11,7 @@ endif()
 
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(camera_info_manager REQUIRED)
 
 ament_auto_find_build_dependencies()
 
@@ -57,6 +58,19 @@ ament_auto_add_library(mono_camera_node SHARED
 )
 add_dependencies_and_linkings(mono_camera_node)
 
+# Register the component
+rclcpp_components_register_nodes(mono_camera_node 
+  "avt_vimba_camera::MonoCameraNode")
+
+
+ament_auto_add_library(image_subscriber_node SHARED
+  src/image_subscriber_node.cpp
+)
+
+# Add this line after the library definition
+rclcpp_components_register_nodes(image_subscriber_node 
+  "avt_vimba_camera::ImageSubscriberNode")
+
 ament_auto_add_library(trigger_node SHARED
   src/trigger_node.cpp
 )
@@ -66,9 +80,32 @@ add_dependencies_and_linkings(trigger_node)
 ament_auto_add_executable(mono_camera_exec
   src/exec/mono_camera_exec.cpp
 )
+target_link_libraries(mono_camera_exec
+  mono_camera_node
+)
 
 ament_auto_add_executable(trigger_exec
   src/exec/trigger_exec.cpp
+)
+target_link_libraries(trigger_exec
+  trigger_node
+)
+
+# Add the intra-process executable
+ament_auto_add_executable(intra_process_exec
+  src/exec/intra_process_exec.cpp
+)
+target_link_libraries(intra_process_exec
+  mono_camera_node
+  image_subscriber_node
+)
+
+# Add the image subscriber executable
+ament_auto_add_executable(image_subscriber_exec
+  src/exec/image_subscriber_exec.cpp
+)
+target_link_libraries(image_subscriber_exec
+  image_subscriber_node
 )
 
 #############

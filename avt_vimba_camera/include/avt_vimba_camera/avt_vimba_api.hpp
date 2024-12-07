@@ -238,8 +238,12 @@ public:
     if (VmbErrorSuccess == err)
     {
       bool PUB_DEBAYER = true;
+      if (pixel_format == VmbPixelFormatRgb8 || pixel_format == VmbPixelFormatBgr8 || pixel_format == VmbPixelFormatRgb16 || pixel_format == VmbPixelFormatBgr16) {
+        PUB_DEBAYER = false;
+      }
 
       if (PUB_DEBAYER) {
+        // RCLCPP_INFO(logger_, "[frameToImage] PUB_DEBAYER");
         const cv::Mat m(height, width, CV_8UC1, static_cast<uint8_t*>(buffer_ptr), step);
         image.height = height;
         image.width = width;
@@ -247,14 +251,17 @@ public:
         image.is_bigendian = false;
         image.step = step * 3;
         image.data = std::vector<uint8_t>(image.height * image.width * 3);
+        // RCLCPP_INFO(logger_, "[frameToImage] image.data size: %lu", image.data.size());
 
         cv::Mat output_mat(image.height, image.width, CV_8UC3,
             static_cast<uint8_t*>(image.data.data()), image.step);
+        // RCLCPP_INFO(logger_, "[frameToImage] output_mat size: %lu", output_mat.total());
         cv::ColorConversionCodes code = cv::COLOR_BayerBG2RGB;
         cv::demosaicing(m, output_mat, code);
         res = true;
 
         if (publish_compressed){
+          // RCLCPP_INFO(logger_, "[frameToImage] publish_compressed: %d", publish_compressed);
             // const auto debayer_start = std::chrono::high_resolution_clock::now();
             compressed_image.header = image.header;
             compressed_image.format = "jpeg";
@@ -264,7 +271,7 @@ public:
                 // TODO: Add more parameters here
               }
             );
-
+            // RCLCPP_INFO(logger_, "[frameToImage] compressed_image.data size: %lu", compressed_image.data.size());
             // const auto debayer_end = std::chrono::high_resolution_clock::now();
             // auto ms = std::chrono::duration_cast<std::chrono::microseconds>(debayer_end - debayer_start).count();
             // RCLCPP_WARN(logger_, "image debayer took %lu microseconds", ms);

@@ -46,6 +46,7 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <avt_vimba_camera_msgs/srv/load_settings.hpp>
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
+#include "std_msgs/msg/int32.hpp"
 
 
 namespace avt_vimba_camera
@@ -53,7 +54,7 @@ namespace avt_vimba_camera
 class MonoCameraNode : public rclcpp::Node
 {
 public:
-  MonoCameraNode();
+  explicit MonoCameraNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~MonoCameraNode();
   void start();
 
@@ -72,7 +73,13 @@ private:
   image_transport::CameraPublisher camera_info_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
-  
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
+  std::weak_ptr<rclcpp::Publisher<sensor_msgs::msg::Image>> captured_pub;
+
+  std::weak_ptr<rclcpp::Publisher<std_msgs::msg::Int32>> captured_pub_demo;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pub_demo_;
+  rclcpp::TimerBase::SharedPtr timer_demo_;
+
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;
 
@@ -82,6 +89,8 @@ private:
 
   void loadParams();
   void frameCallback(const FramePtr& vimba_frame_ptr);
+  void publishImagePtr(sensor_msgs::msg::Image & image);
+
   void startSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
                         const std_srvs::srv::Trigger::Request::SharedPtr req,
                         std_srvs::srv::Trigger::Response::SharedPtr res);

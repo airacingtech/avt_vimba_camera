@@ -63,7 +63,7 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
   loadParams();
 
   auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
-  qos.reliable();
+  qos.best_effort();
 
   if (publish_compressed_) {
     compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("image/compressed", qos);
@@ -106,6 +106,7 @@ void MonoCameraNode::loadParams()
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
   publish_compressed_ = this->declare_parameter("publish_compressed", true);
 
+  RCLCPP_INFO(this->get_logger(), "publish_compressed: %d", publish_compressed_);
   RCLCPP_INFO(this->get_logger(), "Parameters loaded");
 }
 

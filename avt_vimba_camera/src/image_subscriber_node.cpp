@@ -10,7 +10,7 @@ ImageSubscriberNode::ImageSubscriberNode(const rclcpp::NodeOptions & options)
 {
   // Create QoS profile matching the publisher
   auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
-  qos.reliable();
+  qos.best_effort();
 
   rclcpp::SubscriptionOptions sub_options;
   sub_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;

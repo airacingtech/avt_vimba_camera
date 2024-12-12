@@ -65,9 +65,9 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
   auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
   qos.best_effort();
 
-  if (publish_compressed_) {
-    compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("image/compressed", qos);
-  }
+  // if (publish_compressed_) {
+  //   compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("image/compressed", qos);
+  // }
 
   rclcpp::PublisherOptions pub_options;
   pub_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
@@ -143,14 +143,14 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 	    ci.header.stamp = ros_time;
       img.header.frame_id = ci.header.frame_id;
       img.header.stamp = ci.header.stamp;
-      camera_info_pub_.publish(img, ci);
+      // camera_info_pub_.publish(img, ci);
       publishImagePtr(img);
 
-      if (publish_compressed_) {
-        compressed_image.header.frame_id = ci.header.frame_id;
-        compressed_image.header.stamp = ci.header.stamp;
-        compressed_pub->publish(compressed_image);
-      }
+      // if (publish_compressed_) {
+      //   compressed_image.header.frame_id = ci.header.frame_id;
+      //   compressed_image.header.stamp = ci.header.stamp;
+      //   compressed_pub->publish(compressed_image);
+      // }
     }
     else
     {

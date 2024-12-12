@@ -71,7 +71,7 @@ private:
   int32_t ptp_offset_;
 
   image_transport::CameraPublisher camera_info_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
+  // rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   std::weak_ptr<rclcpp::Publisher<sensor_msgs::msg::Image>> captured_pub;

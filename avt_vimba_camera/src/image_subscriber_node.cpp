@@ -24,11 +24,17 @@ ImageSubscriberNode::ImageSubscriberNode(const rclcpp::NodeOptions & options)
   );
 
   // Create the demo subscription
-  subscription_demo_ = this->create_subscription<std_msgs::msg::Int32>(
-    "image/demo",
-    qos,
-    std::bind(&ImageSubscriberNode::demoCallback, this, std::placeholders::_1)
-  );
+  // subscription_demo_ = this->create_subscription<std_msgs::msg::Int32>(
+  //   "image/demo",
+  //   qos,
+  //   std::bind(&ImageSubscriberNode::demoCallback, this, std::placeholders::_1)
+  // );
+
+  // Create a publisher to re-publish the image on "output_image" topic
+  image_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("ptr/output_image", 10);
+  // demo_publisher_ = this->create_publisher<std_msgs::msg::Int32>("demo/output_image", 10);
+
+
 
   RCLCPP_INFO(this->get_logger(), "Image subscriber node started with IPC enabled");
 }
@@ -52,17 +58,26 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
     RCLCPP_INFO(this->get_logger(), 
         "Received image: %dx%d, encoding: %s, address: %s",
         width, height, encoding.c_str(), addr.c_str());
+
+    sensor_msgs::msg::Image last_image_;
+    last_image_ = *msg;
+    image_publisher_->publish(std::move(*msg));
 }
 
-void ImageSubscriberNode::demoCallback(std_msgs::msg::Int32::UniquePtr msg)
-{
-  std::stringstream ss;
-  ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+// void ImageSubscriberNode::demoCallback(std_msgs::msg::Int32::UniquePtr msg)
+// {
+//   std::stringstream ss;
+//   ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
   
-  RCLCPP_INFO(this->get_logger(), 
-    "Received demo message: %d, address: %s",
-    msg->data, ss.str().c_str());
-}
+//   RCLCPP_INFO(this->get_logger(), 
+//     "Received demo message: %d, address: %s",
+//     msg->data, ss.str().c_str());
+
+//   std_msgs::msg::Int32 last_demo_;
+//   last_demo_ = *msg;
+//   demo_publisher_->publish(std::move(*msg));
+  
+// }
 
 }  // namespace avt_vimba_camera
 

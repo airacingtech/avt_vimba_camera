@@ -20,13 +20,16 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscription_;
   
   // Demo message subscription
-  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr subscription_demo_;
+  // rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr subscription_demo_;
 
   // Callback for image messages
   void imageCallback(sensor_msgs::msg::Image::UniquePtr msg);
   
   // Callback for demo messages
-  void demoCallback(std_msgs::msg::Int32::UniquePtr msg);
+  // void demoCallback(std_msgs::msg::Int32::UniquePtr msg);
+
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
+  // rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr demo_publisher_;
 };
 
 }  // namespace avt_vimba_camera

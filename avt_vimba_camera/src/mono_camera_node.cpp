@@ -79,8 +79,8 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
   );
   captured_pub = image_pub_;
 
-  pub_demo_ = this->create_publisher<std_msgs::msg::Int32>("image/demo", qos);
-  captured_pub_demo = pub_demo_;
+  // pub_demo_ = this->create_publisher<std_msgs::msg::Int32>("image/demo", qos);
+  // captured_pub_demo = pub_demo_;
   
   try {
     this->start();

@@ -2,7 +2,7 @@
   ros__parameters:
     name: camera
     frame_id: "vimba_front"
-    ip: '10.42.7.51'
+    ip: '10.42.17.51'
     guid: ''
     use_measurement_time: false
     ptp_offset: 0

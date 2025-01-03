@@ -48,40 +48,36 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         RCLCPP_WARN(this->get_logger(), "Received null image message");
         return;
     }
+
+    std::stringstream ss;
+    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    
+    // Store values locally before logging
+    const auto width = msg->width;
+    const auto height = msg->height;
+    const auto encoding = msg->encoding;
+    const auto addr = ss.str();
+    
+    RCLCPP_INFO(this->get_logger(), 
+        "Received image: %dx%d, encoding: %s, address: %s",
+        width, height, encoding.c_str(), addr.c_str());
     try {
+
         // Convert ROS image message to OpenCV image - note the *msg to dereference
-        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGR8);
+        // cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGR8);
         
-        // Use frame_id as window name, fallback to "Camera Image" if empty
-        std::string window_name = msg->header.frame_id.empty() ? 
-            "Camera Image" : msg->header.frame_id;
+        // // Use frame_id as window name, fallback to "Camera Image" if empty
+        // std::string window_name = msg->header.frame_id.empty() ? 
+        //     "Camera Image" : msg->header.frame_id;
         
-        // Display the image
-        cv::imshow(window_name, cv_ptr->image);
-        cv::waitKey(1);  // Wait 1ms to allow image to display
+        // // Display the image
+        // cv::imshow(window_name, cv_ptr->image);
+        // cv::waitKey(1);  // Wait 1ms to allow image to display
         
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         return;
     }
-
-    // std::stringstream ss;
-    // std::stringstream ss;
-    // ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
-    
-    // // Store values locally before logging
-    // const auto width = msg->width;
-    // const auto height = msg->height;
-    // const auto encoding = msg->encoding;
-    // const auto addr = ss.str();
-    
-    // RCLCPP_INFO(this->get_logger(), 
-    //     "Received image: %dx%d, encoding: %s, address: %s",
-    //     width, height, encoding.c_str(), addr.c_str());
-
-    // sensor_msgs::msg::Image last_image_;
-    // last_image_ = *msg;
-    // image_publisher_->publish(std::move(*msg));
 }
 
 // void ImageSubscriberNode::demoCallback(std_msgs::msg::Int32::UniquePtr msg)

@@ -46,18 +46,18 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         return;
     }
 
-    std::stringstream ss;
-    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    // std::stringstream ss;
+    // ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
     
-    // Store values locally before logging
-    const auto width = msg->width;
-    const auto height = msg->height;
-    const auto encoding = msg->encoding;
-    const auto addr = ss.str();
+    // // Store values locally before logging
+    // const auto width = msg->width;
+    // const auto height = msg->height;
+    // const auto encoding = msg->encoding;
+    // const auto addr = ss.str();
     
-    RCLCPP_INFO(this->get_logger(), 
-        "Received image: %dx%d, encoding: %s, address: %s",
-        width, height, encoding.c_str(), addr.c_str());
+    // RCLCPP_INFO(this->get_logger(), 
+    //     "Received image: %dx%d, encoding: %s, address: %s",
+    //     width, height, encoding.c_str(), addr.c_str());
 
     // sensor_msgs::msg::Image last_image_;
     // last_image_ = *msg;

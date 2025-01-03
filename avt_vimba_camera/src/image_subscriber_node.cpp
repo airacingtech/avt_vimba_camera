@@ -31,7 +31,7 @@ ImageSubscriberNode::ImageSubscriberNode(const rclcpp::NodeOptions & options)
   // );
 
   // Create a publisher to re-publish the image on "output_image" topic
-  image_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("ptr/output_image", 10);
+  // image_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("ptr/output_image", 10);
   // demo_publisher_ = this->create_publisher<std_msgs::msg::Int32>("demo/output_image", 10);
 
 
@@ -59,9 +59,9 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         "Received image: %dx%d, encoding: %s, address: %s",
         width, height, encoding.c_str(), addr.c_str());
 
-    sensor_msgs::msg::Image last_image_;
-    last_image_ = *msg;
-    image_publisher_->publish(std::move(*msg));
+    // sensor_msgs::msg::Image last_image_;
+    // last_image_ = *msg;
+    // image_publisher_->publish(std::move(*msg));
 }
 
 // void ImageSubscriberNode::demoCallback(std_msgs::msg::Int32::UniquePtr msg)

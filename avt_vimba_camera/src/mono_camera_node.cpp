@@ -73,7 +73,7 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
   pub_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
 
   image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      "image/ptr", 
+      frame_id_ + "/image/ptr",
       qos,
       pub_options
   );

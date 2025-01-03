@@ -2,6 +2,7 @@
 #include <sstream>
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.hpp>
+#include <opencv2/highgui.hpp>  // For imshow and waitKey
 
 
 namespace avt_vimba_camera
@@ -48,8 +49,8 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         return;
     }
     try {
-        // Convert ROS image message to OpenCV image
-        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+        // Convert ROS image message to OpenCV image - note the *msg to dereference
+        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGR8);
         
         // Use frame_id as window name, fallback to "Camera Image" if empty
         std::string window_name = msg->header.frame_id.empty() ? 

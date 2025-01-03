@@ -62,23 +62,23 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         "Received image: %dx%d, encoding: %s, address: %s",
         width, height, encoding.c_str(), addr.c_str());
     try {
-
-        // Convert ROS image message to OpenCV image - note the *msg to dereference
+        // Convert ROS image message to OpenCV image
         cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGR8);
         
-        RCLCPP_INFO(this->get_logger(), "CV pointer created");
-        // Use frame_id as window name, fallback to "Camera Image" if empty
+        // Create a named window first (with proper flags for ROS environment)
         std::string window_name = msg->header.frame_id.empty() ? 
             "Camera Image" : msg->header.frame_id;
+        cv::namedWindow(window_name, cv::WINDOW_AUTOSIZE | cv::WINDOW_KEEPRATIO);
         
-        RCLCPP_INFO(this->get_logger(), "window_name created");
-
         // Display the image
         cv::imshow(window_name, cv_ptr->image);
-        cv::waitKey(1);  // Wait 1ms to allow image to display
+        cv::pollKey(); // Non-blocking key check instead of waitKey
         
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+        return;
+    } catch (cv::Exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "OpenCV exception: %s", e.what());
         return;
     }
 }

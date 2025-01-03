@@ -1,5 +1,7 @@
 #include "avt_vimba_camera/image_subscriber_node.hpp"
 #include <sstream>
+#include <cv_bridge/cv_bridge.h>
+#include <sensor_msgs/image_encodings.hpp>
 
 
 namespace avt_vimba_camera

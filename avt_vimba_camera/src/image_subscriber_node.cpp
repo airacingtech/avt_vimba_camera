@@ -45,7 +45,24 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         RCLCPP_WARN(this->get_logger(), "Received null image message");
         return;
     }
+    try {
+        // Convert ROS image message to OpenCV image
+        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
+        
+        // Use frame_id as window name, fallback to "Camera Image" if empty
+        std::string window_name = msg->header.frame_id.empty() ? 
+            "Camera Image" : msg->header.frame_id;
+        
+        // Display the image
+        cv::imshow(window_name, cv_ptr->image);
+        cv::waitKey(1);  // Wait 1ms to allow image to display
+        
+    } catch (cv_bridge::Exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+        return;
+    }
 
+    // std::stringstream ss;
     // std::stringstream ss;
     // ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
     

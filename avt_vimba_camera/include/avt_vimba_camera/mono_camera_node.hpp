@@ -71,13 +71,13 @@ private:
   int32_t ptp_offset_;
 
   image_transport::CameraPublisher camera_info_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
+  // rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   std::weak_ptr<rclcpp::Publisher<sensor_msgs::msg::Image>> captured_pub;
 
-  std::weak_ptr<rclcpp::Publisher<std_msgs::msg::Int32>> captured_pub_demo;
-  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pub_demo_;
+  // std::weak_ptr<rclcpp::Publisher<std_msgs::msg::Int32>> captured_pub_demo;
+  // rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr pub_demo_;
   rclcpp::TimerBase::SharedPtr timer_demo_;
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_srv_;
@@ -85,7 +85,6 @@ private:
 
   rclcpp::Service<avt_vimba_camera_msgs::srv::LoadSettings>::SharedPtr load_srv_;
   rclcpp::Service<avt_vimba_camera_msgs::srv::SaveSettings>::SharedPtr save_srv_;
-
 
   void loadParams();
   void frameCallback(const FramePtr& vimba_frame_ptr);

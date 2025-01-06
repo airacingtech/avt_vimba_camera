@@ -65,22 +65,22 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions & options)
   auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
   qos.best_effort();
 
-  if (publish_compressed_) {
-    compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("image/compressed", qos);
-  }
+  // if (publish_compressed_) {
+  //   compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("image/compressed", qos);
+  // }
 
   rclcpp::PublisherOptions pub_options;
   pub_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Enable;
 
   image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
-      "image/ptr", 
+      frame_id_ + "/image/ptr",
       qos,
       pub_options
   );
   captured_pub = image_pub_;
 
-  pub_demo_ = this->create_publisher<std_msgs::msg::Int32>("image/demo", qos);
-  captured_pub_demo = pub_demo_;
+  // pub_demo_ = this->create_publisher<std_msgs::msg::Int32>("image/demo", qos);
+  // captured_pub_demo = pub_demo_;
   
   try {
     this->start();
@@ -106,7 +106,7 @@ void MonoCameraNode::loadParams()
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
   publish_compressed_ = this->declare_parameter("publish_compressed", true);
 
-  RCLCPP_INFO(this->get_logger(), "publish_compressed: %d", publish_compressed_);
+  // RCLCPP_INFO(this->get_logger(), "publish_compressed: %d", publish_compressed_);
   RCLCPP_INFO(this->get_logger(), "Parameters loaded");
 }
 
@@ -143,14 +143,14 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 	    ci.header.stamp = ros_time;
       img.header.frame_id = ci.header.frame_id;
       img.header.stamp = ci.header.stamp;
-      camera_info_pub_.publish(img, ci);
+      // camera_info_pub_.publish(img, ci);
       publishImagePtr(img);
 
-      if (publish_compressed_) {
-        compressed_image.header.frame_id = ci.header.frame_id;
-        compressed_image.header.stamp = ci.header.stamp;
-        compressed_pub->publish(compressed_image);
-      }
+      // if (publish_compressed_) {
+      //   compressed_image.header.frame_id = ci.header.frame_id;
+      //   compressed_image.header.stamp = ci.header.stamp;
+      //   compressed_pub->publish(compressed_image);
+      // }
     }
     else
     {
@@ -168,10 +168,10 @@ void MonoCameraNode::publishImagePtr(sensor_msgs::msg::Image & image) {
     }
     sensor_msgs::msg::Image::UniquePtr msg(new sensor_msgs::msg::Image(image));
 
-    std::stringstream ss;
-    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
-    RCLCPP_INFO(this->get_logger(), "Published message with address: %s", 
-                ss.str().c_str());
+    // std::stringstream ss;
+    // ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    // RCLCPP_INFO(this->get_logger(), "Published message with address: %s", 
+    //             ss.str().c_str());
     pub_ptr->publish(std::move(msg));
 }
 

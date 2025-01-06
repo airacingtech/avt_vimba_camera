@@ -1,5 +1,8 @@
 #include "avt_vimba_camera/image_subscriber_node.hpp"
 #include <sstream>
+#include <cv_bridge/cv_bridge.h>
+#include <sensor_msgs/image_encodings.hpp>
+#include <opencv2/highgui.hpp>  // For imshow and waitKey
 
 
 namespace avt_vimba_camera
@@ -24,11 +27,17 @@ ImageSubscriberNode::ImageSubscriberNode(const rclcpp::NodeOptions & options)
   );
 
   // Create the demo subscription
-  subscription_demo_ = this->create_subscription<std_msgs::msg::Int32>(
-    "image/demo",
-    qos,
-    std::bind(&ImageSubscriberNode::demoCallback, this, std::placeholders::_1)
-  );
+  // subscription_demo_ = this->create_subscription<std_msgs::msg::Int32>(
+  //   "image/demo",
+  //   qos,
+  //   std::bind(&ImageSubscriberNode::demoCallback, this, std::placeholders::_1)
+  // );
+
+  // Create a publisher to re-publish the image on "output_image" topic
+  // image_publisher_ = this->create_publisher<sensor_msgs::msg::Image>("ptr/output_image", 10);
+  // demo_publisher_ = this->create_publisher<std_msgs::msg::Int32>("demo/output_image", 10);
+
+
 
   RCLCPP_INFO(this->get_logger(), "Image subscriber node started with IPC enabled");
 }
@@ -40,29 +49,54 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         return;
     }
 
-    std::stringstream ss;
-    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    // std::stringstream ss;
+    // ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
     
     // Store values locally before logging
-    const auto width = msg->width;
-    const auto height = msg->height;
-    const auto encoding = msg->encoding;
-    const auto addr = ss.str();
+    // const auto width = msg->width;
+    // const auto height = msg->height;
+    // const auto encoding = msg->encoding;
+    // const auto addr = ss.str();
     
-    RCLCPP_INFO(this->get_logger(), 
-        "Received image: %dx%d, encoding: %s, address: %s",
-        width, height, encoding.c_str(), addr.c_str());
+    // RCLCPP_INFO(this->get_logger(), 
+    //     "Received image: %dx%d, encoding: %s, address: %s",
+    //     width, height, encoding.c_str(), addr.c_str());
+    try {
+        // Convert ROS image message to OpenCV image
+        cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGR8);
+        
+        // Create a named window first (with proper flags for ROS environment)
+        std::string window_name = msg->header.frame_id.empty() ? 
+            "Camera Image" : msg->header.frame_id;
+        cv::namedWindow(window_name, cv::WINDOW_AUTOSIZE | cv::WINDOW_KEEPRATIO);
+        
+        // Display the image
+        cv::imshow(window_name, cv_ptr->image);
+        cv::pollKey(); // Non-blocking key check instead of waitKey
+        
+    } catch (cv_bridge::Exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
+        return;
+    } catch (cv::Exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "OpenCV exception: %s", e.what());
+        return;
+    }
 }
 
-void ImageSubscriberNode::demoCallback(std_msgs::msg::Int32::UniquePtr msg)
-{
-  std::stringstream ss;
-  ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+// void ImageSubscriberNode::demoCallback(std_msgs::msg::Int32::UniquePtr msg)
+// {
+//   std::stringstream ss;
+//   ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
   
-  RCLCPP_INFO(this->get_logger(), 
-    "Received demo message: %d, address: %s",
-    msg->data, ss.str().c_str());
-}
+//   RCLCPP_INFO(this->get_logger(), 
+//     "Received demo message: %d, address: %s",
+//     msg->data, ss.str().c_str());
+
+//   std_msgs::msg::Int32 last_demo_;
+//   last_demo_ = *msg;
+//   demo_publisher_->publish(std::move(*msg));
+  
+// }
 
 }  // namespace avt_vimba_camera
 

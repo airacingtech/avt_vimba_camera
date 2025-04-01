@@ -143,7 +143,7 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 	    ci.header.stamp = ros_time;
       img.header.frame_id = ci.header.frame_id;
       img.header.stamp = ci.header.stamp;
-      // camera_info_pub_.publish(img, ci);
+      camera_info_pub_.publish(img, ci);
       publishImagePtr(img);
 
       // if (publish_compressed_) {

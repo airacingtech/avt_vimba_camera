@@ -52,7 +52,7 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
     std::stringstream ss;
     ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
     
-    Store values locally before logging
+    // Store values locally before logging
     const auto width = msg->width;
     const auto height = msg->height;
     const auto encoding = msg->encoding;

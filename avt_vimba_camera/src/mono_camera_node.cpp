@@ -168,10 +168,10 @@ void MonoCameraNode::publishImagePtr(sensor_msgs::msg::Image & image) {
     }
     sensor_msgs::msg::Image::UniquePtr msg(new sensor_msgs::msg::Image(image));
 
-    // std::stringstream ss;
-    // ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
-    // RCLCPP_INFO(this->get_logger(), "Published message with address: %s", 
-    //             ss.str().c_str());
+    std::stringstream ss;
+    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    RCLCPP_INFO(this->get_logger(), "Published message with address: %s", 
+                ss.str().c_str());
     pub_ptr->publish(std::move(msg));
 }
 

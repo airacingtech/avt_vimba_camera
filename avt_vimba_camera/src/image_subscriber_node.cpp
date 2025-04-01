@@ -20,7 +20,7 @@ ImageSubscriberNode::ImageSubscriberNode(const rclcpp::NodeOptions & options)
 
   // Create the image subscription
   subscription_ = this->create_subscription<sensor_msgs::msg::Image>(
-    "image/ptr",
+    "/vimba_front/image/ptr",
     qos,
     std::bind(&ImageSubscriberNode::imageCallback, this, std::placeholders::_1),
     sub_options
@@ -49,18 +49,18 @@ void ImageSubscriberNode::imageCallback(sensor_msgs::msg::Image::UniquePtr msg)
         return;
     }
 
-    // std::stringstream ss;
-    // ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
+    std::stringstream ss;
+    ss << "0x" << std::hex << reinterpret_cast<std::uintptr_t>(msg.get());
     
-    // Store values locally before logging
-    // const auto width = msg->width;
-    // const auto height = msg->height;
-    // const auto encoding = msg->encoding;
-    // const auto addr = ss.str();
+    Store values locally before logging
+    const auto width = msg->width;
+    const auto height = msg->height;
+    const auto encoding = msg->encoding;
+    const auto addr = ss.str();
     
-    // RCLCPP_INFO(this->get_logger(), 
-    //     "Received image: %dx%d, encoding: %s, address: %s",
-    //     width, height, encoding.c_str(), addr.c_str());
+    RCLCPP_INFO(this->get_logger(), 
+        "Received image: %dx%d, encoding: %s, address: %s",
+        width, height, encoding.c_str(), addr.c_str());
     try {
         // Convert ROS image message to OpenCV image
         cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(*msg, sensor_msgs::image_encodings::BGR8);

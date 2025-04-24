@@ -12,7 +12,8 @@ endif()
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(camera_info_manager REQUIRED)
-
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED)
 ament_auto_find_build_dependencies()
 
 # Get architecture
@@ -104,6 +105,10 @@ target_link_libraries(intra_process_exec
 ament_auto_add_executable(image_subscriber_exec
   src/exec/image_subscriber_exec.cpp
 )
+target_link_libraries(image_subscriber_exec
+  ${OpenCV_LIBS}
+)
+
 target_link_libraries(image_subscriber_exec
   image_subscriber_node
 )

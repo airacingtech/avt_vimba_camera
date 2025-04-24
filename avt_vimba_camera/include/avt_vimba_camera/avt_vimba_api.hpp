@@ -39,7 +39,6 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/fill_image.hpp>
-#include <sensor_msgs/msg/compressed_image.hpp>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
@@ -147,9 +146,7 @@ public:
   }
 
   bool frameToImage(const FramePtr vimba_frame_ptr,
-                    sensor_msgs::msg::Image& image,
-                    sensor_msgs::msg::CompressedImage& compressed_image,
-                    bool publish_compressed)
+                    sensor_msgs::msg::Image& image)
   {
     VmbPixelFormatType pixel_format;
     VmbUint32_t width, height, nSize;
@@ -259,23 +256,6 @@ public:
         cv::ColorConversionCodes code = cv::COLOR_BayerBG2RGB;
         cv::demosaicing(m, output_mat, code);
         res = true;
-
-        if (publish_compressed){
-          // RCLCPP_INFO(logger_, "[frameToImage] publish_compressed: %d", publish_compressed);
-            // const auto debayer_start = std::chrono::high_resolution_clock::now();
-            compressed_image.header = image.header;
-            compressed_image.format = "jpeg";
-            cv::imencode(".jpg", output_mat, compressed_image.data,
-              std::vector<int>{
-                cv::IMWRITE_JPEG_QUALITY, 90
-                // TODO: Add more parameters here
-              }
-            );
-            // RCLCPP_INFO(logger_, "[frameToImage] compressed_image.data size: %lu", compressed_image.data.size());
-            // const auto debayer_end = std::chrono::high_resolution_clock::now();
-            // auto ms = std::chrono::duration_cast<std::chrono::microseconds>(debayer_end - debayer_start).count();
-            // RCLCPP_WARN(logger_, "image debayer took %lu microseconds", ms);
-        }
       } else {
         res = sensor_msgs::fillImage(image, encoding, height, width, step, buffer_ptr);
       }

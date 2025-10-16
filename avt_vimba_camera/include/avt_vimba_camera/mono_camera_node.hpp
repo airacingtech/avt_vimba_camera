@@ -47,9 +47,13 @@
 #include <avt_vimba_camera_msgs/srv/load_settings.hpp>
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
 
+#include "isaac_ros_managed_nitros/managed_nitros_publisher.hpp"
+#include "isaac_ros_nitros_image_type/nitros_image.hpp"
+#include "isaac_ros_nitros_image_type/nitros_image_builder.hpp"
 
 namespace avt_vimba_camera
 {
+ using namespace nvidia::isaac_ros::nitros;
 class MonoCameraNode : public rclcpp::Node
 {
 public:
@@ -68,6 +72,18 @@ private:
   bool use_measurement_time_;
   bool publish_compressed_;
   int32_t ptp_offset_;
+
+std::unique_ptr<ManagedNitrosPublisher<NitrosImage>> nitros_img_pub_;
+
+  // CUDA buffer reused across frames
+  uint8_t* d_image_ = nullptr;
+  size_t d_capacity_bytes_ = 0;
+
+  // Optional pinned host buffer
+  std::unique_ptr<uint8_t, void(*)(void*)> pinned_host_{nullptr, [](void* p){
+    if (p) cudaFreeHost(p);
+  }};
+  size_t pinned_capacity_bytes_ = 0;
 
   image_transport::CameraPublisher camera_info_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;

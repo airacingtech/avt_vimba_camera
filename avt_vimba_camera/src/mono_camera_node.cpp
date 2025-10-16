@@ -42,10 +42,21 @@ namespace avt_vimba_camera
 {
 MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
 {
+<<<<<<< Updated upstream
   // Set the image publisher before streaming
   camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image", rmw_qos_profile_sensor_data);
 
   // Set the frame callback
+=======
+  camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
+  NitrosDiagnosticsConfig diag_config;
+  nitros_img_pub_ = std::make_unique<ManagedNitrosPublisher<NitrosImage>>(
+        this,
+        "~/image/nitros",
+        "nitros_image_bgr8",
+        diag_config,
+        rclcpp::SensorDataQoS());
+>>>>>>> Stashed changes
   cam_.setCallback(std::bind(&avt_vimba_camera::MonoCameraNode::frameCallback, this, _1));
 
   start_srv_ = create_service<std_srvs::srv::Trigger>("~/start_stream", std::bind(&MonoCameraNode::startSrvCallback, this, _1, _2, _3));
@@ -95,8 +106,16 @@ void MonoCameraNode::start()
 
 void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 {
+  static thread_local bool cuda_initialized = false;
+  if (!cuda_initialized) {
+    cudaSetDevice(0);
+    cudaFree(0);
+    cuda_initialized = true;
+  }
+
   rclcpp::Time ros_time = this->get_clock()->now();
 
+<<<<<<< Updated upstream
   // getNumSubscribers() is not yet supported in Foxy, will be supported in later versions
   // if (camera_info_pub_.getNumSubscribers() > 0)
   {
@@ -131,8 +150,60 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
     {
       RCLCPP_WARN_STREAM(this->get_logger(), "Function frameToImage returned 0. No image published.");
     }
+=======
+  sensor_msgs::msg::Image img;
+  sensor_msgs::msg::CompressedImage compressed_image;
+  if (!api_.frameToImage(vimba_frame_ptr, img, compressed_image, publish_compressed_)) {
+    RCLCPP_WARN_STREAM(this->get_logger(), "frameToImage() failed. No image published.");
+    return;
+  }
+
+  sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
+  ci.header.frame_id = frame_id_;
+  ci.header.stamp = ros_time;
+  img.header = ci.header;
+  camera_info_pub_.publish(img, ci);
+
+  // ---- GPU Publishing ----
+  const size_t width = img.width;
+  const size_t height = img.height;
+  const size_t step = img.step;
+  const size_t bytes = height * step;
+
+  static thread_local uint8_t* d_image = nullptr;
+  static thread_local size_t d_image_size = 0;
+
+  if (!d_image || d_image_size != bytes) {
+    if (d_image) cudaFree(d_image);
+    cudaMalloc(&d_image, bytes);
+    d_image_size = bytes;
+  }
+
+  // Copy from CPU to GPU
+  cudaError_t err = cudaMemcpy(d_image, img.data.data(), bytes, cudaMemcpyHostToDevice);
+  if (err != cudaSuccess) {
+    RCLCPP_ERROR(this->get_logger(), "cudaMemcpy failed: %s", cudaGetErrorString(err));
+    return;
+  }
+
+  if (nitros_img_pub_) {
+    auto nitros_msg = NitrosImageBuilder()
+      .WithHeader(img.header)
+      .WithEncoding(img.encoding)        // usually "bgr8" or "rgb8"
+      .WithDimensions(img.height, img.width)
+      .WithGpuData(d_image)              // GPU pointer
+      .Build();
+
+    nitros_img_pub_->publish(nitros_msg);
+  }
+
+  if (publish_compressed_) {
+    compressed_image.header = ci.header;
+    compressed_pub->publish(compressed_image);
+>>>>>>> Stashed changes
   }
 }
+
 
 void MonoCameraNode::startSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
                                       const std_srvs::srv::Trigger::Request::SharedPtr req,

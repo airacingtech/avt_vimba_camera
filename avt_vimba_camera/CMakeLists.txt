@@ -11,7 +11,9 @@ endif()
 
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
-
+find_package(isaac_ros_nitros REQUIRED)
+find_package(isaac_ros_managed_nitros REQUIRED)
+find_package(isaac_ros_nitros_image_type REQUIRED)
 ament_auto_find_build_dependencies()
 
 # Get architecture

@@ -42,12 +42,6 @@ namespace avt_vimba_camera
 {
 MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
 {
-<<<<<<< Updated upstream
-  // Set the image publisher before streaming
-  camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image", rmw_qos_profile_sensor_data);
-
-  // Set the frame callback
-=======
   camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
   NitrosDiagnosticsConfig diag_config;
   nitros_img_pub_ = std::make_unique<ManagedNitrosPublisher<NitrosImage>>(
@@ -56,7 +50,6 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
         "nitros_image_bgr8",
         diag_config,
         rclcpp::SensorDataQoS());
->>>>>>> Stashed changes
   cam_.setCallback(std::bind(&avt_vimba_camera::MonoCameraNode::frameCallback, this, _1));
 
   start_srv_ = create_service<std_srvs::srv::Trigger>("~/start_stream", std::bind(&MonoCameraNode::startSrvCallback, this, _1, _2, _3));

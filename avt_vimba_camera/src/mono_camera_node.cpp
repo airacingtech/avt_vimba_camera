@@ -37,7 +37,6 @@
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
 
 using namespace std::placeholders;
-
 namespace avt_vimba_camera
 {
 MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
@@ -45,7 +44,7 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
   
   camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
   NitrosDiagnosticsConfig diag_config;
-  nitros_img_pub_ = std::make_unique<ManagedNitrosPublisher<NitrosImage>>(
+  nitros_img_pub_ = std::make_unique<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<nvidia::isaac_ros::nitros::NitrosImage>>(
         this,
         "~/image/nitros",
         "nitros_image_bgr8",
@@ -123,36 +122,23 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
   camera_info_pub_.publish(img, ci);
 
   // ---- GPU Publishing ----
-  const size_t width = img.width;
-  const size_t height = img.height;
-  const size_t step = img.step;
-  const size_t bytes = height * step;
+  size_t buffer_size{img.step * img.height};
+  void * buffer;
+  cudaMalloc(&buffer, buffer_size);
 
-  static thread_local uint8_t* d_image = nullptr;
-  static thread_local size_t d_image_size = 0;
+  // Copy data bytes to CUDA buffer
+  cudaMemcpy(buffer, img.data.data(), buffer_size, cudaMemcpyDefault);
 
-  if (!d_image || d_image_size != bytes) {
-    if (d_image) cudaFree(d_image);
-    cudaMalloc(&d_image, bytes);
-    d_image_size = bytes;
-  }
-
-  // Copy from CPU to GPU
-  cudaError_t err = cudaMemcpy(d_image, img.data.data(), bytes, cudaMemcpyHostToDevice);
-  if (err != cudaSuccess) {
-    RCLCPP_ERROR(this->get_logger(), "cudaMemcpy failed: %s", cudaGetErrorString(err));
-    return;
-  }
-  
   if (nitros_img_pub_) {
-    auto nitros_msg = NitrosImageBuilder()
+    nvidia::isaac_ros::nitros::NitrosImage nitros_msg = NitrosImageBuilder()
       .WithHeader(img.header)
-      .WithEncoding(img.encoding)        // usually "bgr8" or "rgb8"
+      .WithEncoding(img.encoding)
       .WithDimensions(img.height, img.width)
-      .WithGpuData(d_image)              // GPU pointer
+      .WithGpuData(buffer)
       .Build();
 
     nitros_img_pub_->publish(nitros_msg);
+    RCLCPP_INFO(this->get_logger(), "Sent CUDA buffer with memory at: %p", buffer);
   }
 
   if (publish_compressed_) {

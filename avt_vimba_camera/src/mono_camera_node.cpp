@@ -42,6 +42,7 @@ namespace avt_vimba_camera
 {
 MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
 {
+  
   camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
   NitrosDiagnosticsConfig diag_config;
   nitros_img_pub_ = std::make_unique<ManagedNitrosPublisher<NitrosImage>>(
@@ -142,7 +143,7 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
     RCLCPP_ERROR(this->get_logger(), "cudaMemcpy failed: %s", cudaGetErrorString(err));
     return;
   }
-
+  
   if (nitros_img_pub_) {
     auto nitros_msg = NitrosImageBuilder()
       .WithHeader(img.header)

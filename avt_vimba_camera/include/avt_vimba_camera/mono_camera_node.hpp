@@ -73,17 +73,7 @@ private:
   bool publish_compressed_;
   int32_t ptp_offset_;
 
-std::unique_ptr<ManagedNitrosPublisher<NitrosImage>> nitros_img_pub_;
-
-  // CUDA buffer reused across frames
-  uint8_t* d_image_ = nullptr;
-  size_t d_capacity_bytes_ = 0;
-
-  // Optional pinned host buffer
-  std::unique_ptr<uint8_t, void(*)(void*)> pinned_host_{nullptr, [](void* p){
-    if (p) cudaFreeHost(p);
-  }};
-  size_t pinned_capacity_bytes_ = 0;
+  std::unique_ptr<ManagedNitrosPublisher<NitrosImage>> nitros_img_pub_;
 
   image_transport::CameraPublisher camera_info_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;

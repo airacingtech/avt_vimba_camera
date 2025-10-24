@@ -99,13 +99,6 @@ void MonoCameraNode::start()
 
 void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 {
-  static thread_local bool cuda_initialized = false;
-  if (!cuda_initialized) {
-    cudaSetDevice(0);
-    cudaFree(0);
-    cuda_initialized = true;
-  }
-
   rclcpp::Time ros_time = this->get_clock()->now();
 
   sensor_msgs::msg::Image img;

@@ -44,9 +44,6 @@
 #include <unistd.h>
 #include <sys/select.h>
 #include <fcntl.h>
-#include <termios.h>
-#include <unistd.h>
-#include <sys/select.h>
 
 using namespace AVT::VmbAPI;
 
@@ -96,11 +93,18 @@ void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_st
 
   if (enable_pcap_)
   {
+    if (pcap_file_path_.empty())
+    {
+      RCLCPP_ERROR(nh_->get_logger(), "PCAP mode enabled but no file path provided");
+      camera_state_ = ERROR;
+      return;
+    }
+    
     pcap_reader_ = std::make_shared<PcapReader>(pcap_file_path_, ip_str, nh_->get_logger());
     
     if (!pcap_reader_->open())
     {
-      RCLCPP_ERROR(nh_->get_logger(), "Failed to open PCAP file");
+      RCLCPP_ERROR(nh_->get_logger(), "Failed to open PCAP file: '%s'", pcap_file_path_.c_str());
       camera_state_ = ERROR;
       return;
     }
@@ -262,7 +266,13 @@ void AvtVimbaCamera::stopImaging()
   if (enable_pcap_ && pcap_thread_running_)
   {
     pcap_thread_running_ = false;
+    keyboard_thread_running_ = false;
+    
     if (pcap_thread_.joinable()) pcap_thread_.join();
+    if (keyboard_thread_.joinable()) keyboard_thread_.join();
+    
+    restoreTerminal();
+    
     streaming_ = false;
     camera_state_ = IDLE;
     diagnostic_msg_ = "PCAP replay stopped";
@@ -398,7 +408,8 @@ int AvtVimbaCamera::getImageWidth()
     {
       return static_cast<int>(nh_->get_parameter("feature/Width").as_int());
     }
-    return 516;  // default fallback
+    RCLCPP_ERROR(nh_->get_logger(), "Cannot determine image width: feature/Width parameter not set");
+    return -1;
   }
   int width = -1;
   if (vimba_camera_ptr_) getFeatureValue("Width", width);
@@ -413,7 +424,8 @@ int AvtVimbaCamera::getImageHeight()
     {
       return static_cast<int>(nh_->get_parameter("feature/Height").as_int());
     }
-    return 384;  // default fallback
+    RCLCPP_ERROR(nh_->get_logger(), "Cannot determine image height: feature/Height parameter not set");
+    return -1;
   }
   int height = -1;
   if (vimba_camera_ptr_) getFeatureValue("Height", height);
@@ -428,7 +440,8 @@ int AvtVimbaCamera::getSensorWidth()
     {
       return static_cast<int>(nh_->get_parameter("feature/Width").as_int());
     }
-    return 516;  // default fallback
+    RCLCPP_ERROR(nh_->get_logger(), "Cannot determine sensor width: feature/Width parameter not set");
+    return -1;
   }
   int width = -1;
   if (vimba_camera_ptr_) getFeatureValue("SensorWidth", width);
@@ -443,7 +456,8 @@ int AvtVimbaCamera::getSensorHeight()
     {
       return static_cast<int>(nh_->get_parameter("feature/Height").as_int());
     }
-    return 384;  // default fallback
+    RCLCPP_ERROR(nh_->get_logger(), "Cannot determine sensor height: feature/Height parameter not set");
+    return -1;
   }
   int height = -1;
   if (vimba_camera_ptr_) getFeatureValue("SensorHeight", height);
@@ -805,6 +819,10 @@ void AvtVimbaCamera::initConfig()
     if (!nh_->has_parameter("feature/Height"))
     {
       nh_->declare_parameter<int64_t>("feature/Height", 384);
+    }
+    if (!nh_->has_parameter("feature/PixelFormat"))
+    {
+      nh_->declare_parameter<std::string>("feature/PixelFormat", "BayerRG8");
     }
     
     updateCameraInfo();
@@ -1243,7 +1261,7 @@ void AvtVimbaCamera::pcapReplayThread()
       GigEFrame gige_frame;
       if (pcap_reader_->seekToFrame(target_frame) && pcap_reader_->readNextFrame(gige_frame))
       {
-        pcap_frame_index_ = target_frame + 1;
+        pcap_frame_index_.store(target_frame + 1);
         publishPcapFrame(gige_frame);
         RCLCPP_INFO(nh_->get_logger(), "[SEEK] -%.1fs (frame %d)", 
                     pcap_seek_time_, target_frame);
@@ -1254,7 +1272,6 @@ void AvtVimbaCamera::pcapReplayThread()
       }
     }
     
-    if (pcap_paused_.load())
     if (pcap_paused_.load())
     {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1311,6 +1328,23 @@ void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
     return;
   }
   
+  // Get Bayer pattern from parameter (default BayerRG8 for Mako G-319C)
+  std::string pixel_format = nh_->get_parameter("feature/PixelFormat").as_string();
+  int bayer_code = cv::COLOR_BayerRG2RGB;  // Default for Mako G-319C
+  
+  if (pixel_format == "BayerRG8") {
+    bayer_code = cv::COLOR_BayerRG2RGB;
+  } else if (pixel_format == "BayerGB8") {
+    bayer_code = cv::COLOR_BayerGB2RGB;
+  } else if (pixel_format == "BayerGR8") {
+    bayer_code = cv::COLOR_BayerGR2RGB;
+  } else if (pixel_format == "BayerBG8") {
+    bayer_code = cv::COLOR_BayerBG2RGB;
+  } else {
+    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 10000,
+                         "Unknown PixelFormat '%s', using BayerRG8", pixel_format.c_str());
+  }
+  
   const cv::Mat bayer_mat(height, width, CV_8UC1, 
                           const_cast<uint8_t*>(gige_frame.data.data()), width);
   
@@ -1324,7 +1358,7 @@ void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
   
   cv::Mat output_mat(height, width, CV_8UC3,
                      static_cast<uint8_t*>(img.data.data()), img.step);
-  cv::demosaicing(bayer_mat, output_mat, cv::COLOR_BayerBG2RGB);
+  cv::demosaicing(bayer_mat, output_mat, bayer_code);
   
   sensor_msgs::msg::CameraInfo ci = info_man_->getCameraInfo();
   ci.header.frame_id = frame_id_;
@@ -1372,7 +1406,7 @@ void AvtVimbaCamera::restoreTerminal()
   if (tty_fd_ >= 0)
   {
     tcsetattr(tty_fd_, TCSANOW, &orig_termios_);
-    close(tty_fd_);
+    ::close(tty_fd_);
     tty_fd_ = -1;
   }
 }

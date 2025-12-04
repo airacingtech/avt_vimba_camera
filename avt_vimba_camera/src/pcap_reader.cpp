@@ -69,9 +69,13 @@ bool PcapReader::parseGVSPPacket(const uint8_t* packet_data, size_t packet_size,
   
   if (gvsp_size < 8) return false;
   
-  uint16_t block_id = ntohs(*reinterpret_cast<const uint16_t*>(gvsp_data + 2));
   uint8_t packet_type = gvsp_data[4];
-  uint32_t frame_id = block_id;
+  
+  // Extract 24-bit frame counter (Frame ID) from GVSP header (bytes 5,6,7)
+  // This is the proper GigE Vision frame ID, not the block_id
+  uint32_t frame_id = (static_cast<uint32_t>(gvsp_data[5]) << 16) |
+                      (static_cast<uint32_t>(gvsp_data[6]) << 8)  |
+                      (static_cast<uint32_t>(gvsp_data[7]));
   
   switch (packet_type)
   {

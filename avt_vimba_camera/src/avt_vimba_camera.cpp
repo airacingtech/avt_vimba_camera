@@ -1329,8 +1329,12 @@ void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
   }
   
   // Get Bayer pattern from parameter (default BayerRG8 for Mako G-319C)
-  std::string pixel_format = nh_->get_parameter("feature/PixelFormat").as_string();
-  int bayer_code = cv::COLOR_BayerRG2RGB;  // Default for Mako G-319C
+  std::string pixel_format = "BayerRG8";
+  if (nh_->has_parameter("feature/PixelFormat")) {
+    pixel_format = nh_->get_parameter("feature/PixelFormat").as_string();
+  }
+  
+  int bayer_code = cv::COLOR_BayerRG2RGB;
   
   if (pixel_format == "BayerRG8") {
     bayer_code = cv::COLOR_BayerRG2RGB;
@@ -1341,9 +1345,11 @@ void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
   } else if (pixel_format == "BayerBG8") {
     bayer_code = cv::COLOR_BayerBG2RGB;
   } else {
-    RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 10000,
-                         "Unknown PixelFormat '%s', using BayerRG8", pixel_format.c_str());
+    RCLCPP_WARN_ONCE(nh_->get_logger(),
+                     "Unknown PixelFormat '%s', using BayerRG2RGB", pixel_format.c_str());
   }
+  
+  RCLCPP_INFO_ONCE(nh_->get_logger(), "PCAP debayering using: %s", pixel_format.c_str());
   
   const cv::Mat bayer_mat(height, width, CV_8UC1, 
                           const_cast<uint8_t*>(gige_frame.data.data()), width);

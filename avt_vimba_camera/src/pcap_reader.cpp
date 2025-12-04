@@ -67,7 +67,10 @@ bool PcapReader::parseGVSPPacket(const uint8_t* packet_data, size_t packet_size,
   const uint8_t* gvsp_data = udp_packet + 8;  // Skip UDP header
   size_t gvsp_size = packet_size - 14 - ip_header_len - 8;
   
+  // Ensure we have at least 8 bytes for GVSP header
   if (gvsp_size < 8) return false;
+  // Ensure packet_size is large enough to access all header bytes safely
+  if (packet_size < 14 + ip_header_len + 8 + 8) return false;
   
   uint8_t packet_type = gvsp_data[4];
   

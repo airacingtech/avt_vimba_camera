@@ -84,8 +84,14 @@ void MonoCameraNode::loadParams()
   use_measurement_time_ = this->declare_parameter("use_measurement_time", false);
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
   publish_compressed_ = this->declare_parameter("publish_compressed", true);
-  enable_pcap_ = this->declare_parameter("enable_pcap", false);
-  pcap_file_ = this->declare_parameter("pcap_file", "");
+  
+  rcl_interfaces::msg::ParameterDescriptor pcap_enable_desc;
+  pcap_enable_desc.description = "Enable PCAP replay mode instead of live camera streaming";
+  enable_pcap_ = this->declare_parameter("enable_pcap", false, pcap_enable_desc);
+  
+  rcl_interfaces::msg::ParameterDescriptor pcap_file_desc;
+  pcap_file_desc.description = "Path to PCAP file containing GigE Vision camera data for replay";
+  pcap_file_ = this->declare_parameter("pcap_file", "", pcap_file_desc);
 }
 
 void MonoCameraNode::start()

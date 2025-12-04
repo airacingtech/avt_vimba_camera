@@ -408,8 +408,8 @@ int AvtVimbaCamera::getImageWidth()
     {
       return static_cast<int>(nh_->get_parameter("feature/Width").as_int());
     }
-    RCLCPP_ERROR(nh_->get_logger(), "Cannot determine image width: feature/Width parameter not set");
-    return -1;
+    RCLCPP_ERROR_ONCE(nh_->get_logger(), "Cannot determine image width: feature/Width parameter not set");
+    return 516;  // Default for Mako G-319C
   }
   int width = -1;
   if (vimba_camera_ptr_) getFeatureValue("Width", width);
@@ -424,8 +424,8 @@ int AvtVimbaCamera::getImageHeight()
     {
       return static_cast<int>(nh_->get_parameter("feature/Height").as_int());
     }
-    RCLCPP_ERROR(nh_->get_logger(), "Cannot determine image height: feature/Height parameter not set");
-    return -1;
+    RCLCPP_ERROR_ONCE(nh_->get_logger(), "Cannot determine image height: feature/Height parameter not set");
+    return 384;  // Default for Mako G-319C
   }
   int height = -1;
   if (vimba_camera_ptr_) getFeatureValue("Height", height);

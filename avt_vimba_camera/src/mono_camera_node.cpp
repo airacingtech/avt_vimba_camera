@@ -45,8 +45,13 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
   // Set the image publisher before streaming
   camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
 
-  // Set the frame callback
+  // Set the frame callback (for live camera)
   cam_.setCallback(std::bind(&avt_vimba_camera::MonoCameraNode::frameCallback, this, _1));
+  
+  // Set PCAP publish callback (for PCAP replay - uses same image processing as live)
+  cam_.setPcapPublishCallback([this](const sensor_msgs::msg::Image& img, const sensor_msgs::msg::CameraInfo& ci) {
+    camera_info_pub_.publish(img, ci);
+  });
 
   start_srv_ = create_service<std_srvs::srv::Trigger>("~/start_stream", std::bind(&MonoCameraNode::startSrvCallback, this, _1, _2, _3));
   stop_srv_ = create_service<std_srvs::srv::Trigger>("~/stop_stream", std::bind(&MonoCameraNode::stopSrvCallback, this, _1, _2, _3));
@@ -56,10 +61,10 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
 
   loadParams();
 
-  auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
-  qos.reliable();
-
-  if (publish_compressed_) {
+  if (publish_compressed_)
+  {
+    auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
+    qos.reliable();
     compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("~/image/compressed", qos);
   }
 }
@@ -79,8 +84,8 @@ void MonoCameraNode::loadParams()
   use_measurement_time_ = this->declare_parameter("use_measurement_time", false);
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
   publish_compressed_ = this->declare_parameter("publish_compressed", true);
-
-  RCLCPP_INFO(this->get_logger(), "Parameters loaded");
+  enable_pcap_ = this->declare_parameter("enable_pcap", false);
+  pcap_file_ = this->declare_parameter("pcap_file", "");
 }
 
 void MonoCameraNode::start()
@@ -89,7 +94,7 @@ void MonoCameraNode::start()
   api_.start();
 
   // Start camera
-  cam_.start(ip_, guid_, frame_id_, camera_info_url_);
+  cam_.start(ip_, guid_, frame_id_, camera_info_url_, enable_pcap_, pcap_file_);
   cam_.startImaging();
 }
 

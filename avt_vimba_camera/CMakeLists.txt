@@ -54,6 +54,7 @@ ament_auto_add_library(mono_camera_node SHARED
   src/mono_camera_node.cpp
   src/avt_vimba_camera.cpp
   src/frame_observer.cpp
+  src/pcap_reader.cpp
 )
 add_dependencies_and_linkings(mono_camera_node)
 

@@ -37,14 +37,21 @@
 
 #include "avt_vimba_camera/frame_observer.hpp"
 #include "avt_vimba_camera/avt_vimba_api.hpp"
+#include "avt_vimba_camera/pcap_reader.hpp"
 
 #include <diagnostic_updater/diagnostic_updater.hpp>
 #include <diagnostic_updater/publisher.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <camera_info_manager/camera_info_manager.hpp>
 
 #include <string>
 #include <mutex>
+#include <thread>
+#include <atomic>
+#include <memory>
+#include <functional>
+#include <termios.h>
 
 using AVT::VmbAPI::CameraPtr;
 using AVT::VmbAPI::FramePtr;
@@ -74,7 +81,7 @@ public:
   // AvtVimbaCamera(rclcpp::Node* owner_node);
   AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node);
   void start(const std::string& ip_str, const std::string& guid_str, const std::string& frame_id,
-             const std::string& camera_info_url);
+             const std::string& camera_info_url, bool enable_pcap = false, const std::string& pcap_file = "");
   void stop();
   void initConfig();
   void startImaging();
@@ -111,6 +118,13 @@ public:
   {
     force_stopped_ = force_stop;
   }
+  
+  // PCAP frame publishing callback - uses same image processing as live camera
+  typedef std::function<void(const sensor_msgs::msg::Image&, const sensor_msgs::msg::CameraInfo&)> pcapPublishFunc;
+  void setPcapPublishCallback(pcapPublishFunc callback)
+  {
+    pcap_publish_callback_ = callback;
+  }
 
 private:
   rclcpp::Node::SharedPtr nh_;
@@ -145,9 +159,44 @@ private:
   std::string diagnostic_msg_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_sub_;
 
+  // PCAP replay support
+  bool enable_pcap_;
+  std::string pcap_file_path_;
+  bool pcap_replay_active_;
+  std::shared_ptr<PcapReader> pcap_reader_;
+  std::thread pcap_thread_;
+  std::atomic<bool> pcap_thread_running_;
+  std::atomic<int> pcap_frame_index_{0};
+  
+  // PCAP keyboard control (using /dev/tty)
+  std::atomic<double> pcap_playback_speed_{1.0};
+  std::atomic<bool> pcap_paused_{false};
+  std::atomic<bool> pcap_step_forward_{false};
+  std::atomic<bool> pcap_step_backward_{false};
+  std::thread keyboard_thread_;
+  std::atomic<bool> keyboard_thread_running_{false};
+  int tty_fd_{-1};
+  struct termios orig_termios_;
+  
+  double pcap_seek_time_{0.5};
+  double pcap_speed_increment_{0.1};
+  double pcap_speed_min_{0.1};
+  double pcap_speed_max_{10.0};
+  double pcap_assumed_fps_{30.0};
+
   CameraPtr openCamera(const std::string& id_str);
 
+  // PCAP replay methods
+  void startPcapReplay();
+  void pcapReplayThread();
+  void publishPcapFrame(const GigEFrame& gige_frame);
+  void keyboardInputThread();
+  void setupTerminal();
+  void restoreTerminal();
+  void printKeyboardControls();
+
   frameCallbackFunc userFrameCallback;
+  pcapPublishFunc pcap_publish_callback_;
   void frameCallback(const FramePtr vimba_frame_ptr);
 
   template <typename T>

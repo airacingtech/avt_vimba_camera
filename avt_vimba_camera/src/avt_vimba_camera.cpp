@@ -36,8 +36,19 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <signal.h>
+#include <cstring>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/select.h>
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/select.h>
+
+using namespace AVT::VmbAPI;
 
 namespace avt_vimba_camera
 {
@@ -53,6 +64,11 @@ AvtVimbaCamera::AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node)
   on_init_config_ = false;
   force_stopped_ = false;
   camera_state_ = OPENING;
+  enable_pcap_ = false;
+  pcap_replay_active_ = false;
+  pcap_thread_running_ = false;
+  keyboard_thread_running_ = false;
+  tty_fd_ = -1;
 
   // Features that affect the camera_info parameters
   cam_info_features_.emplace("Width");
@@ -67,14 +83,36 @@ AvtVimbaCamera::AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node)
 }
 
 void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_str, const std::string& frame_id,
-                           const std::string& camera_info_url)
+                           const std::string& camera_info_url, bool enable_pcap, const std::string& pcap_file)
 {
-  if (opened_)
-    return;
+  if (opened_) return;
 
   frame_id_ = frame_id;
   info_man_ = std::shared_ptr<camera_info_manager::CameraInfoManager>(
       new camera_info_manager::CameraInfoManager(nh_.get(), frame_id, camera_info_url));
+  
+  enable_pcap_ = enable_pcap;
+  pcap_file_path_ = pcap_file;
+
+  if (enable_pcap_)
+  {
+    pcap_reader_ = std::make_shared<PcapReader>(pcap_file_path_, ip_str, nh_->get_logger());
+    
+    if (!pcap_reader_->open())
+    {
+      RCLCPP_ERROR(nh_->get_logger(), "Failed to open PCAP file");
+      camera_state_ = ERROR;
+      return;
+    }
+    
+    pcap_replay_active_ = true;
+    opened_ = true;
+    camera_state_ = IDLE;
+    updater_.setHardwareID("PCAP:" + pcap_file_path_);
+    updater_.force_update();
+    initConfig();
+    return;
+  }
   updater_.broadcast(0, "Starting device with IP:" + ip_str + " or GUID:" + guid_str);
 
   // Determine which camera to use. Try IP first
@@ -152,63 +190,98 @@ void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_st
 
 void AvtVimbaCamera::stop()
 {
-  if (!opened_)
-    return;
-  vimba_camera_ptr_->Close();
+  if (!opened_) return;
+  
+  if (keyboard_thread_running_)
+  {
+    keyboard_thread_running_ = false;
+    if (keyboard_thread_.joinable()) keyboard_thread_.join();
+  }
+  
+  if (pcap_thread_running_)
+  {
+    pcap_thread_running_ = false;
+    if (pcap_thread_.joinable()) pcap_thread_.join();
+  }
+  
+  restoreTerminal();
+  
+  if (pcap_reader_)
+  {
+    pcap_reader_->close();
+    pcap_replay_active_ = false;
+  }
+  
+  if (vimba_camera_ptr_) vimba_camera_ptr_->Close();
+  
   opened_ = false;
 }
 
 void AvtVimbaCamera::startImaging()
 {
-  if (!streaming_)
+  if (streaming_)
   {
-    // Start streaming
-    VmbErrorType err = vimba_camera_ptr_->StartContinuousImageAcquisition(3, IFrameObserverPtr(frame_obs_ptr_));
-    if (err == VmbErrorSuccess)
-    {
-      diagnostic_msg_ = "Starting continuous image acquisition";
-      RCLCPP_INFO_STREAM(nh_->get_logger(), "Starting continuous image acquisition ...");
-      streaming_ = true;
-      camera_state_ = OK;
-    }
-    else
-    {
-      diagnostic_msg_ = "Could not start continuous image acquisition. Error: " + api_.errorCodeToMessage(err);
-      RCLCPP_ERROR_STREAM(nh_->get_logger(), "Could not start continuous image acquisition. "
-                                                 << "\n Error: " << api_.errorCodeToMessage(err));
-      camera_state_ = ERROR;
-    }
+    RCLCPP_WARN(nh_->get_logger(), "Camera already imaging");
+    return;
+  }
+
+  if (enable_pcap_ && pcap_replay_active_)
+  {
+    startPcapReplay();
+    streaming_ = true;
+    camera_state_ = OK;
+    diagnostic_msg_ = "PCAP replay started";
+    updater_.force_update();
+    return;
+  }
+  
+  VmbErrorType err = vimba_camera_ptr_->StartContinuousImageAcquisition(3, IFrameObserverPtr(frame_obs_ptr_));
+  if (err == VmbErrorSuccess)
+  {
+    diagnostic_msg_ = "Continuous image acquisition started";
+    streaming_ = true;
+    camera_state_ = OK;
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(), "Start imaging called, but the camera is already imaging.");
+    diagnostic_msg_ = "Failed to start acquisition: " + api_.errorCodeToMessage(err);
+    RCLCPP_ERROR(nh_->get_logger(), "%s", diagnostic_msg_.c_str());
+    camera_state_ = ERROR;
   }
   updater_.force_update();
 }
 
 void AvtVimbaCamera::stopImaging()
 {
-  if (streaming_ || on_init_)
+  if (!streaming_ && !on_init_)
   {
-    VmbErrorType err = vimba_camera_ptr_->StopContinuousImageAcquisition();
-    if (err == VmbErrorSuccess)
-    {
-      diagnostic_msg_ = "Acquisition stopped";
-      RCLCPP_INFO_STREAM(nh_->get_logger(), "Acquisition stoppped ...");
-      streaming_ = false;
-      camera_state_ = IDLE;
-    }
-    else
-    {
-      diagnostic_msg_ = "Could not stop image acquisition. Error: " + api_.errorCodeToMessage(err);
-      RCLCPP_ERROR_STREAM(nh_->get_logger(), "Could not stop image acquisition."
-                                                 << "\n Error: " << api_.errorCodeToMessage(err));
-      camera_state_ = ERROR;
-    }
+    RCLCPP_WARN(nh_->get_logger(), "Camera already stopped");
+    return;
+  }
+
+  if (enable_pcap_ && pcap_thread_running_)
+  {
+    pcap_thread_running_ = false;
+    if (pcap_thread_.joinable()) pcap_thread_.join();
+    streaming_ = false;
+    camera_state_ = IDLE;
+    diagnostic_msg_ = "PCAP replay stopped";
+    updater_.force_update();
+    return;
+  }
+  
+  VmbErrorType err = vimba_camera_ptr_->StopContinuousImageAcquisition();
+  if (err == VmbErrorSuccess)
+  {
+    diagnostic_msg_ = "Acquisition stopped";
+    streaming_ = false;
+    camera_state_ = IDLE;
   }
   else
   {
-    RCLCPP_WARN_STREAM(nh_->get_logger(), "Stop imaging called, but the camera is already stopped.");
+    diagnostic_msg_ = "Failed to stop acquisition: " + api_.errorCodeToMessage(err);
+    RCLCPP_ERROR(nh_->get_logger(), "%s", diagnostic_msg_.c_str());
+    camera_state_ = ERROR;
   }
   updater_.force_update();
 }
@@ -292,73 +365,115 @@ CameraState AvtVimbaCamera::getCameraState() const
 
 double AvtVimbaCamera::getTimestamp()
 {
-  double timestamp = -1.0;
+  if (enable_pcap_ || !vimba_camera_ptr_) return -1.0;
+  
   if (runCommand("GevTimestampControlLatch"))
   {
     VmbInt64_t freq, ticks;
     getFeatureValue("GevTimestampTickFrequency", freq);
     getFeatureValue("GevTimestampValue", ticks);
-    timestamp = static_cast<double>(ticks) / static_cast<double>(freq);
+    return static_cast<double>(ticks) / static_cast<double>(freq);
   }
-  return timestamp;
+  return -1.0;
 }
 
 double AvtVimbaCamera::getDeviceTemp()
 {
-  double temp = -1.0;
+  if (enable_pcap_ || !vimba_camera_ptr_) return -1.0;
+  
   if (setFeatureValue("DeviceTemperatureSelector", "Main") == VmbErrorSuccess)
   {
+    double temp;
     getFeatureValue("DeviceTemperature", temp);
+    return temp;
   }
-  return temp;
+  return -1.0;
 }
 
 int AvtVimbaCamera::getImageWidth()
 {
+  if (enable_pcap_)
+  {
+    if (nh_->has_parameter("feature/Width"))
+    {
+      return static_cast<int>(nh_->get_parameter("feature/Width").as_int());
+    }
+    return 516;  // default fallback
+  }
   int width = -1;
-  getFeatureValue("Width", width);
+  if (vimba_camera_ptr_) getFeatureValue("Width", width);
   return width;
 }
 
 int AvtVimbaCamera::getImageHeight()
 {
+  if (enable_pcap_)
+  {
+    if (nh_->has_parameter("feature/Height"))
+    {
+      return static_cast<int>(nh_->get_parameter("feature/Height").as_int());
+    }
+    return 384;  // default fallback
+  }
   int height = -1;
-  getFeatureValue("Height", height);
+  if (vimba_camera_ptr_) getFeatureValue("Height", height);
   return height;
 }
 
 int AvtVimbaCamera::getSensorWidth()
 {
-  int sensor_width = -1;
-  getFeatureValue("SensorWidth", sensor_width);
-  return sensor_width;
+  if (enable_pcap_)
+  {
+    if (nh_->has_parameter("feature/Width"))
+    {
+      return static_cast<int>(nh_->get_parameter("feature/Width").as_int());
+    }
+    return 516;  // default fallback
+  }
+  int width = -1;
+  if (vimba_camera_ptr_) getFeatureValue("SensorWidth", width);
+  return width;
 }
 
 int AvtVimbaCamera::getSensorHeight()
 {
-  int sensor_height = -1;
-  getFeatureValue("SensorHeight", sensor_height);
-  return sensor_height;
+  if (enable_pcap_)
+  {
+    if (nh_->has_parameter("feature/Height"))
+    {
+      return static_cast<int>(nh_->get_parameter("feature/Height").as_int());
+    }
+    return 384;  // default fallback
+  }
+  int height = -1;
+  if (vimba_camera_ptr_) getFeatureValue("SensorHeight", height);
+  return height;
 }
 
 int AvtVimbaCamera::getBinningOrDecimationX()
 {
   int binning = -1;
   int decimation = -1;
-  getFeatureValue("BinningHorizontal", binning);
-  getFeatureValue("DecimationHorizontal", decimation);
-
-  return std::max(binning, decimation);
+  if (!enable_pcap_ && vimba_camera_ptr_)
+  {
+    getFeatureValue("BinningHorizontal", binning);
+    getFeatureValue("DecimationHorizontal", decimation);
+    return std::max(binning, decimation);
+  }
+  return 1;  // Default for PCAP mode
 }
 
 int AvtVimbaCamera::getBinningOrDecimationY()
 {
   int binning = -1;
   int decimation = -1;
-  getFeatureValue("BinningVertical", binning);
-  getFeatureValue("DecimationVertical", decimation);
-
-  return std::max(binning, decimation);
+  if (!enable_pcap_ && vimba_camera_ptr_)
+  {
+    getFeatureValue("BinningVertical", binning);
+    getFeatureValue("DecimationVertical", decimation);
+    return std::max(binning, decimation);
+  }
+  return 1;  // Default for PCAP mode
 }
 
 sensor_msgs::msg::CameraInfo AvtVimbaCamera::getCameraInfo()
@@ -670,13 +785,29 @@ bool AvtVimbaCamera::runCommand(const std::string& command_str)
 
 void AvtVimbaCamera::initConfig()
 {
-  // Add param callback to catch any changes to params during operation
   param_sub_ =
       nh_->add_on_set_parameters_callback(std::bind(&AvtVimbaCamera::parameterCallback, this, std::placeholders::_1));
 
   if (!opened_)
   {
-    RCLCPP_ERROR(nh_->get_logger(), "Can't configure camera. It needs to be opened first");
+    RCLCPP_ERROR(nh_->get_logger(), "Can't configure camera - not opened");
+    return;
+  }
+
+  if (enable_pcap_)
+  {
+    // For PCAP mode, declare Width and Height parameters if not already declared
+    // These should be set in the parameter file
+    if (!nh_->has_parameter("feature/Width"))
+    {
+      nh_->declare_parameter<int64_t>("feature/Width", 516);
+    }
+    if (!nh_->has_parameter("feature/Height"))
+    {
+      nh_->declare_parameter<int64_t>("feature/Height", 384);
+    }
+    
+    updateCameraInfo();
     return;
   }
 
@@ -1050,6 +1181,259 @@ bool AvtVimbaCamera::saveCameraSettings(const std::string& filename)
   }
   RCLCPP_INFO(nh_->get_logger(), "Saved camera settings to %s", filename.c_str());
   return true;
+}
+
+void AvtVimbaCamera::startPcapReplay()
+{
+  if (!pcap_reader_ || !pcap_reader_->isOpen())
+  {
+    RCLCPP_ERROR(nh_->get_logger(), "Cannot start PCAP replay: reader not initialized");
+    return;
+  }
+  
+  setupTerminal();
+  printKeyboardControls();
+  
+  keyboard_thread_running_ = true;
+  keyboard_thread_ = std::thread(&AvtVimbaCamera::keyboardInputThread, this);
+  
+  pcap_thread_running_ = true;
+  pcap_thread_ = std::thread(&AvtVimbaCamera::pcapReplayThread, this);
+}
+
+void AvtVimbaCamera::pcapReplayThread()
+{
+  const auto base_frame_interval = std::chrono::milliseconds(33);
+  const int frames_per_seek = static_cast<int>(pcap_seek_time_ * pcap_assumed_fps_);
+  
+  while (pcap_thread_running_ && rclcpp::ok())
+  {
+    if (pcap_step_forward_.load())
+    {
+      pcap_step_forward_.store(false);
+      GigEFrame gige_frame;
+      bool success = false;
+      
+      for (int i = 0; i < frames_per_seek; ++i)
+      {
+        if (pcap_reader_->readNextFrame(gige_frame))
+        {
+          pcap_frame_index_++;
+          success = true;
+        }
+        else
+        {
+          RCLCPP_INFO(nh_->get_logger(), "[SEEK] End of PCAP");
+          break;
+        }
+      }
+      
+      if (success)
+      {
+        publishPcapFrame(gige_frame);
+        RCLCPP_INFO(nh_->get_logger(), "[SEEK] +%.1fs (frame %d)", 
+                    pcap_seek_time_, pcap_frame_index_.load() - 1);
+      }
+    }
+    else if (pcap_step_backward_.load())
+    {
+      pcap_step_backward_.store(false);
+      int target_frame = std::max(0, pcap_frame_index_.load() - frames_per_seek - 1);
+      
+      GigEFrame gige_frame;
+      if (pcap_reader_->seekToFrame(target_frame) && pcap_reader_->readNextFrame(gige_frame))
+      {
+        pcap_frame_index_ = target_frame + 1;
+        publishPcapFrame(gige_frame);
+        RCLCPP_INFO(nh_->get_logger(), "[SEEK] -%.1fs (frame %d)", 
+                    pcap_seek_time_, target_frame);
+      }
+      else
+      {
+        RCLCPP_WARN(nh_->get_logger(), "[SEEK] Cannot seek backward");
+      }
+    }
+    
+    if (pcap_paused_.load())
+    if (pcap_paused_.load())
+    {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+    
+    auto start_time = std::chrono::steady_clock::now();
+    GigEFrame gige_frame;
+    
+    if (pcap_reader_->readNextFrame(gige_frame))
+    {
+      pcap_frame_index_++;
+      publishPcapFrame(gige_frame);
+      
+      double speed = pcap_playback_speed_.load();
+      auto adjusted_interval = std::chrono::duration_cast<std::chrono::milliseconds>(
+          base_frame_interval * (1.0 / speed));
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start_time);
+      
+      if (elapsed < adjusted_interval)
+      {
+        std::this_thread::sleep_for(adjusted_interval - elapsed);
+      }
+    }
+    else
+    {
+      RCLCPP_INFO(nh_->get_logger(), "PCAP replay completed (%d frames)", pcap_frame_index_.load());
+      pcap_thread_running_ = false;
+      break;
+    }
+  }
+}
+
+void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
+{
+  if (!pcap_publish_callback_) return;
+  
+  if (!nh_->has_parameter("feature/Width") || !nh_->has_parameter("feature/Height"))
+  {
+    RCLCPP_ERROR_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
+                          "PCAP replay requires feature/Width and feature/Height parameters");
+    return;
+  }
+  
+  VmbUint32_t width = static_cast<VmbUint32_t>(nh_->get_parameter("feature/Width").as_int());
+  VmbUint32_t height = static_cast<VmbUint32_t>(nh_->get_parameter("feature/Height").as_int());
+  
+  if (gige_frame.data.size() < height * width)
+  {
+    RCLCPP_ERROR_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
+                          "PCAP frame size mismatch: %zu < %u", 
+                          gige_frame.data.size(), height * width);
+    return;
+  }
+  
+  const cv::Mat bayer_mat(height, width, CV_8UC1, 
+                          const_cast<uint8_t*>(gige_frame.data.data()), width);
+  
+  sensor_msgs::msg::Image img;
+  img.height = height;
+  img.width = width;
+  img.encoding = "rgb8";
+  img.is_bigendian = false;
+  img.step = width * 3;
+  img.data.resize(height * width * 3);
+  
+  cv::Mat output_mat(height, width, CV_8UC3,
+                     static_cast<uint8_t*>(img.data.data()), img.step);
+  cv::demosaicing(bayer_mat, output_mat, cv::COLOR_BayerBG2RGB);
+  
+  sensor_msgs::msg::CameraInfo ci = info_man_->getCameraInfo();
+  ci.header.frame_id = frame_id_;
+  ci.header.stamp = nh_->get_clock()->now();
+  img.header = ci.header;
+  
+  pcap_publish_callback_(img, ci);
+}
+
+void AvtVimbaCamera::printKeyboardControls()
+{
+  RCLCPP_INFO(nh_->get_logger(), "");
+  RCLCPP_INFO(nh_->get_logger(), "=======================================================");
+  RCLCPP_INFO(nh_->get_logger(), "  PCAP Playback Controls:");
+  RCLCPP_INFO(nh_->get_logger(), "  SPACE     - Pause/Resume");
+  RCLCPP_INFO(nh_->get_logger(), "  UP/DOWN   - Speed %.1fx-%.1fx (%.1fx increments)",
+              pcap_speed_min_, pcap_speed_max_, pcap_speed_increment_);
+  RCLCPP_INFO(nh_->get_logger(), "  LEFT      - Seek backward %.1fs", pcap_seek_time_);
+  RCLCPP_INFO(nh_->get_logger(), "  RIGHT     - Seek forward %.1fs", pcap_seek_time_);
+  RCLCPP_INFO(nh_->get_logger(), "  r         - Reset speed to 1.0x");
+  RCLCPP_INFO(nh_->get_logger(), "  q         - Quit");
+  RCLCPP_INFO(nh_->get_logger(), "=======================================================");
+  RCLCPP_INFO(nh_->get_logger(), "");
+}
+
+void AvtVimbaCamera::setupTerminal()
+{
+  tty_fd_ = ::open("/dev/tty", O_RDWR | O_NONBLOCK);
+  if (tty_fd_ < 0)
+  {
+    RCLCPP_WARN(nh_->get_logger(), "Cannot open /dev/tty - keyboard controls disabled");
+    return;
+  }
+  
+  tcgetattr(tty_fd_, &orig_termios_);
+  struct termios raw = orig_termios_;
+  raw.c_lflag &= ~(ICANON | ECHO);
+  raw.c_cc[VMIN] = 0;
+  raw.c_cc[VTIME] = 1;
+  tcsetattr(tty_fd_, TCSANOW, &raw);
+}
+
+void AvtVimbaCamera::restoreTerminal()
+{
+  if (tty_fd_ >= 0)
+  {
+    tcsetattr(tty_fd_, TCSANOW, &orig_termios_);
+    close(tty_fd_);
+    tty_fd_ = -1;
+  }
+}
+
+void AvtVimbaCamera::keyboardInputThread()
+{
+  if (tty_fd_ < 0) return;
+  
+  while (keyboard_thread_running_ && rclcpp::ok())
+  {
+    char c;
+    if (read(tty_fd_, &c, 1) == 1)
+    {
+      if (c == ' ')
+      {
+        bool was_paused = pcap_paused_.load();
+        pcap_paused_.store(!was_paused);
+        RCLCPP_INFO(nh_->get_logger(), was_paused ? "[RESUME]" : "[PAUSE]");
+      }
+      else if (c == 27)
+      {
+        char seq[2];
+        if (read(tty_fd_, &seq[0], 1) == 1 && read(tty_fd_, &seq[1], 1) == 1 && seq[0] == '[')
+        {
+          if (seq[1] == 'A')
+          {
+            double new_speed = std::min(pcap_playback_speed_.load() + pcap_speed_increment_, pcap_speed_max_);
+            pcap_playback_speed_.store(new_speed);
+            RCLCPP_INFO(nh_->get_logger(), "[SPEED] %.1fx", new_speed);
+          }
+          else if (seq[1] == 'B')
+          {
+            double new_speed = std::max(pcap_playback_speed_.load() - pcap_speed_increment_, pcap_speed_min_);
+            pcap_playback_speed_.store(new_speed);
+            RCLCPP_INFO(nh_->get_logger(), "[SPEED] %.1fx", new_speed);
+          }
+          else if (seq[1] == 'D')
+          {
+            pcap_step_backward_.store(true);
+          }
+          else if (seq[1] == 'C')
+          {
+            pcap_step_forward_.store(true);
+          }
+        }
+      }
+      else if (c == 'r' || c == 'R')
+      {
+        pcap_playback_speed_.store(1.0);
+        RCLCPP_INFO(nh_->get_logger(), "[SPEED] Reset to 1.0x");
+      }
+      else if (c == 'q' || c == 'Q')
+      {
+        RCLCPP_INFO(nh_->get_logger(), "[QUIT]");
+        pcap_thread_running_ = false;
+        keyboard_thread_running_ = false;
+        break;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
 }
 
 }  // namespace avt_vimba_camera

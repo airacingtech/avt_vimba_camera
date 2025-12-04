@@ -68,10 +68,15 @@ private:
   bool use_measurement_time_;
   bool publish_compressed_;
   int32_t ptp_offset_;
+  bool enable_pcap_;
+  std::string pcap_file_;
 
   image_transport::CameraPublisher camera_info_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
+  
+  // Allow camera access to publishers for PCAP mode
+  friend class AvtVimbaCamera;
   
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr start_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_srv_;

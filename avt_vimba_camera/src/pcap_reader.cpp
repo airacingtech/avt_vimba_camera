@@ -74,11 +74,10 @@ bool PcapReader::parseGVSPPacket(const uint8_t* packet_data, size_t packet_size,
   
   uint8_t packet_type = gvsp_data[4];
   
-  // Extract 24-bit frame counter (Frame ID) from GVSP header (bytes 5,6,7)
-  // This is the proper GigE Vision frame ID, not the block_id
-  uint32_t frame_id = (static_cast<uint32_t>(gvsp_data[5]) << 16) |
-                      (static_cast<uint32_t>(gvsp_data[6]) << 8)  |
-                      (static_cast<uint32_t>(gvsp_data[7]));
+  // For GigE Vision GVSP, use block_id (packet ID) from bytes 2-3 as frame grouping
+  // Many cameras use block_id to group packets from the same frame
+  uint16_t block_id = (static_cast<uint16_t>(gvsp_data[2]) << 8) | gvsp_data[3];
+  uint32_t frame_id = block_id;
   
   switch (packet_type)
   {

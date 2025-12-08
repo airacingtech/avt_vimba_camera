@@ -11,6 +11,8 @@ endif()
 
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PCAP REQUIRED libpcap)
 
 ament_auto_find_build_dependencies()
 
@@ -25,6 +27,7 @@ target_architecture(ARCH)
 
 include_directories(
   include
+  ${PCAP_INCLUDE_DIRS}
 )
 
 function(add_dependencies_and_linkings arg)
@@ -33,16 +36,19 @@ function(add_dependencies_and_linkings arg)
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/64bit/libVimbaC.so
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/64bit/libVimbaCPP.so
       ${OpenCV_LIBS}
+      ${PCAP_LIBRARIES}
     )
   elseif("${ARCH}" STREQUAL armv7)
     target_link_libraries(${arg}
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/arm_32bit/libVimbaC.so
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/arm_32bit/libVimbaCPP.so
+      ${PCAP_LIBRARIES}
     )
   elseif("${ARCH}" STREQUAL armv8)
     target_link_libraries(${arg}
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/arm_64bit/libVimbaC.so
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/arm_64bit/libVimbaCPP.so
+      ${PCAP_LIBRARIES}
     )
   else()
     message(FATAL_ERROR "[libvimba]: Architecture ${ARCH} not suported. Exiting...")
@@ -54,6 +60,7 @@ ament_auto_add_library(mono_camera_node SHARED
   src/mono_camera_node.cpp
   src/avt_vimba_camera.cpp
   src/frame_observer.cpp
+  src/pcap_reader.cpp
 )
 add_dependencies_and_linkings(mono_camera_node)
 

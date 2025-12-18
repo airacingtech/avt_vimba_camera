@@ -9,8 +9,10 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+find_package(rclcpp REQUIRED)
 find_package(ament_cmake_auto REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(camera_info_manager REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
@@ -62,11 +64,16 @@ ament_auto_add_library(mono_camera_node SHARED
   src/frame_observer.cpp
   src/pcap_reader.cpp
 )
+
 add_dependencies_and_linkings(mono_camera_node)
+
+rclcpp_components_register_nodes(mono_camera_node 
+  "avt_vimba_camera::MonoCameraNode")
 
 ament_auto_add_library(trigger_node SHARED
   src/trigger_node.cpp
 )
+
 add_dependencies_and_linkings(trigger_node)
 
 # Executables
@@ -74,8 +81,16 @@ ament_auto_add_executable(mono_camera_exec
   src/exec/mono_camera_exec.cpp
 )
 
+target_link_libraries(mono_camera_exec
+  mono_camera_node
+)
+
 ament_auto_add_executable(trigger_exec
   src/exec/trigger_exec.cpp
+)
+
+target_link_libraries(trigger_exec
+  trigger_node
 )
 
 #############

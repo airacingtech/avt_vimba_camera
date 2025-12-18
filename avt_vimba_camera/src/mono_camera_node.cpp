@@ -35,12 +35,13 @@
 #include <avt_vimba_camera/mono_camera_node.hpp>
 #include <avt_vimba_camera_msgs/srv/load_settings.hpp>
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 
 using namespace std::placeholders;
 
 namespace avt_vimba_camera
 {
-MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
+MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camera", options), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
 {
   // Set the image publisher before streaming
   camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
@@ -67,6 +68,8 @@ MonoCameraNode::MonoCameraNode() : Node("camera"), api_(this->get_logger()), cam
     qos.reliable();
     compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("~/image/compressed", qos);
   }
+
+  start();
 }
 
 MonoCameraNode::~MonoCameraNode()
@@ -198,4 +201,7 @@ void MonoCameraNode::saveSrvCallback(const std::shared_ptr<rmw_request_id_t> req
     res->result = cam_.saveCameraSettings(req->output_path);
   }
 }
+
 }  // namespace avt_vimba_camera
+
+RCLCPP_COMPONENTS_REGISTER_NODE(avt_vimba_camera::MonoCameraNode)

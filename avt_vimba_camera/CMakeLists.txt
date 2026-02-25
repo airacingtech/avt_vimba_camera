@@ -76,6 +76,9 @@ ament_auto_add_library(trigger_node SHARED
 
 add_dependencies_and_linkings(trigger_node)
 
+rclcpp_components_register_nodes(trigger_node
+   "trigger::TriggerNode")
+   
 # Executables
 ament_auto_add_executable(mono_camera_exec
   src/exec/mono_camera_exec.cpp

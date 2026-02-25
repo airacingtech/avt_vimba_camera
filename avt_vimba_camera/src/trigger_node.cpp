@@ -1,8 +1,8 @@
 #include "avt_vimba_camera/trigger_node.hpp"
-
+#include "rclcpp_components/register_node_macro.hpp"
 namespace trigger
 {
-TriggerNode::TriggerNode() : Node("trigger"), vimba_system_(AVT::VmbAPI::VimbaSystem::GetInstance())
+TriggerNode::TriggerNode(const rclcpp::NodeOptions & options) : Node("trigger", options), vimba_system_(AVT::VmbAPI::VimbaSystem::GetInstance())
 {
   clock_ = rclcpp::Clock(RCL_ROS_TIME);
 
@@ -131,4 +131,5 @@ void TriggerNode::SendActionCommand()
   }
 }
 
+RCLCPP_COMPONENTS_REGISTER_NODE(trigger::TriggerNode)
 }  // namespace trigger

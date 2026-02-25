@@ -14,7 +14,7 @@ namespace trigger
 class TriggerNode : public rclcpp::Node
 {
 public:
-  TriggerNode();
+  TriggerNode(const rclcpp::NodeOptions & options);
   ~TriggerNode();
 
   void Init();

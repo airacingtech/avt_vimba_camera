@@ -43,7 +43,7 @@ void FrameObserver::FrameReceived(const FramePtr vimba_frame_ptr)
 {
   VmbFrameStatusType eReceiveStatus;
   VmbErrorType err = vimba_frame_ptr->GetReceiveStatus(eReceiveStatus);
-
+  std::cout << "Received a frame!!" << "\n";
   if (err == VmbErrorSuccess)
   {
     switch (eReceiveStatus)

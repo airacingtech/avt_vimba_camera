@@ -67,8 +67,8 @@ void TriggerNode::InitializeAddress()
 
 bool TriggerNode::PrepareActionCommand()
 {
-  return (SetIntFeatureValue("ActionDeviceKey", 1) && SetIntFeatureValue("ActionGroupKey", 1) &&
-          SetIntFeatureValue("ActionGroupMask", 1));
+  return (SetIntFeatureValue("ActionDeviceKey", action_device_key_) && SetIntFeatureValue("ActionGroupKey", action_group_key_) &&
+          SetIntFeatureValue("ActionGroupMask", action_group_mask_));
 }
 
 // Sets an integer feature value on the vimba system

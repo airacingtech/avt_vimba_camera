@@ -130,56 +130,235 @@ See the links below for more details on PTP sync.
 - [Image Timestamp on Allied Vision GigE Cameras](https://cdn.alliedvision.com/fileadmin/content/documents/products/cameras/various/appnote/GigE/Image_Timestamp.pdf) 
 - [Decimation](https://cdn.alliedvision.com/fileadmin/content/documents/products/cameras/various/appnote/various/Decimation.pdf) (Binning is similar)
 
-## cuda_camera_node (v2.0.0)
+## `cuda_camera_node` (v2.0.0-configurable)
 
-Zero-copy CUDA alternative to `mono_camera_node`, designed for low-latency autonomous racing perception. Opt-in via `BUILD_CUDA_NODE` CMake option. Same external interface (topics, parameters, services).
+> **Hardware validation status (2026-03-27) -- none of the items below have been tested on real Mako G cameras:**
+>
+> - [ ] `cuda_camera_node` receives frames from a real Mako G camera
+> - [ ] Single camera sustains 30+ fps (RGB8 debayer, no ROI)
+> - [ ] Single camera sustains 39+ fps (Bayer raw, no ROI)
+> - [ ] Single camera sustains 55+ fps (Bayer raw + ROI crop)
+> - [ ] 6-camera simultaneous launch -- all topics publishing
+> - [ ] PTP timestamp sync -- <1 us delta across cameras
+> - [ ] Zero dropped frames over a 10-minute run
+> - [ ] PCAP replay produces frames identical to live capture
+> - [ ] `gpu_direct` DLPack handshake with downstream JAX perception
+
+Zero-copy CUDA alternative to `mono_camera_node`, designed for low-latency autonomous racing perception on the IAC Dallara IL-15. Opt-in via the `BUILD_CUDA_NODE` CMake option. Same external interface (topics, parameters, services) as `mono_camera_node`.
+
+---
+
+### Why This Exists
+
+The stock `mono_camera_node` (upstream `astuff/avt_vimba_camera`) topped out at ~13 fps per camera with 9.6 MB RGB8 frames. For 6 Mako G cameras at 40 Hz over GigE, this was insufficient:
+
+1. **Bandwidth**: 9.6 MB/frame x 40 Hz x 6 cameras = 2.3 GB/s, far exceeding a single GigE link's ~125 MB/s. Even with 4 NICs, 13 fps per camera was the ceiling.
+2. **Redundant debayer**: The driver debayered Bayer to RGB on CPU, then the downstream perception ISP undistorted and resized the RGB image. The ISP can consume raw Bayer directly and do debayer + undistort + resize in one fused GPU kernel -- the driver debayer was wasted work that also tripled message size.
+3. **Timestamp jitter**: Without PTP, each camera's timestamp came from the system clock at frame-arrival time. At 170 mph, a 10 ms offset between two cameras = 0.76 m position error in cross-camera fusion.
+4. **Buffer aliasing race**: The upstream VmbCPP frame observer re-queued buffers inside the callback, creating a race condition where Vimba could DMA into a buffer that the publisher was still reading. This caused corrupted frames and occasional segfaults under load.
+
+---
+
+### What Changed from `mono_camera_node`
+
+#### v1.0.0: Core rewrite
+
+| Change | Details | Motivation |
+|--------|---------|------------|
+| **VmbC instead of VmbCPP** | Raw C API (`VmbC`) replaces the C++ wrapper | Lower overhead, no hidden allocations, direct control over buffer lifecycle |
+| **Pinned DMA buffers** | `cudaMallocHost` pool of 6 page-locked buffers, registered with Vimba as frame receive targets | Zero-copy DMA from camera NIC to pinned host memory, no intermediate copies |
+| **Lock-free SPSC queue** | Frame callback pushes `FrameEntry` structs to a single-producer/single-consumer ring buffer; publisher thread polls at 100 us intervals | Decouples Vimba's internal callback thread from ROS publishing, no mutexes on the hot path |
+| **Deferred frame re-queue** | Vimba frame buffers are re-queued after the publisher finishes reading, not inside the callback | Fixes the buffer aliasing race (D1) -- the root cause of corrupted frames in the upstream driver |
+| **CUDA Malvar-He-Cutler debayer** | 5x5 high-quality demosaicing kernel with shared-memory tiling (16x16 blocks, 2-pixel halo) | When debayer is needed (debug/compat mode), runs on GPU in ~0.3 ms instead of ~2 ms on CPU |
+| **PTP timestamp extraction** | Reads PTP timestamp from Vimba frame metadata and converts to ROS time | Enables sub-microsecond cross-camera sync |
+| **Wall-clock fallback** | Uses `std::chrono::system_clock` instead of `steady_clock` when PTP is unavailable | `steady_clock` has no relation to UTC and cannot be compared across processes; fixes the D2 timestamp drift bug |
+| **Camera open retry** | Retries `VmbCameraOpen` up to 30 times at 2-second intervals | GigE cameras take several seconds to become addressable after power-on; the upstream driver failed immediately (E5 fix) |
+| **Auto packet size** | Calls `VmbFeatureCommandRun("GVSPAdjustPacketSize")` on startup | Auto-negotiates jumbo frames without manual MTU matching (E3 fix) |
+| **PCAP replay** | `pcap_reader.cpp` reassembles GigE Vision GVSP packets from `.pcap` captures, feeds them through the same pipeline | Enables offline testing with recorded raw GigE packets without camera hardware |
+
+#### v2.0.0-configurable: Toggleable optimizations
+
+All v1.0.0 changes were hardcoded. v2.0.0 exposes them as ROS parameters:
+
+| Parameter | Type | Default | Effect |
+|-----------|------|---------|--------|
+| `publish_raw_bayer` | bool | `true` | Skip GPU debayer, publish `bayer_rggb8` (1 byte/px) instead of `rgb8` (3 bytes/px) |
+| `roi_enabled` | bool | `false` | On-sensor ROI crop (camera only reads out the specified rectangle) |
+| `roi_offset_x` | int | `0` | ROI X offset in pixels |
+| `roi_offset_y` | int | `515` | ROI Y offset -- default skips top 1/3 of frame (sky on the Dallara) |
+| `roi_width` | int | `0` | 0 = full sensor width (2064) |
+| `roi_height` | int | `0` | 0 = auto: sensor_height - offset_y |
+| `enable_ptp_sync` | bool | `true` | IEEE 1588 PTP slave mode with 10-second lock polling |
+| `gpu_direct` | bool | `false` | Expose pinned/device buffer pointers for zero-copy composed launch |
+| `num_buffers` | int | `6` | Number of pinned DMA frame buffers in the pool |
+| `ptp_offset` | int | `-37` | Nanosecond TAI-to-UTC correction (launch default) |
+| `enable_pcap` | bool | `false` | PCAP replay mode |
+| `pcap_file` | string | `""` | Path to `.pcap` capture file |
+
+---
 
 ### Architecture
 
 ```
-VmbC API → cudaMallocHost pinned buffers → lock-free SPSC queue → publisher thread
-                                                                      │
-                                                          ┌───────────┴──────────┐
-                                                          │ publish_raw_bayer?   │
-                                                          │                      │
-                                                     true │                false │
-                                                          │                      │
-                                                  BayerRG8 Image         CUDA debayer
-                                                  (3.2 MB, 0.1ms)       → RGB8 Image
-                                                                         (9.6 MB, 0.5ms)
+Mako G sensor (2064x1544 BayerRG8)
+  |
+  | GigE Vision (GVSP over UDP, jumbo frames 9014 MTU)
+  |
+  v
+VmbC frame receive callback (Vimba SDK internal thread)
+  |-- Extracts PTP timestamp (or falls back to system_clock)
+  |-- Pushes FrameEntry to lock-free SPSC queue
+  |-- Does NOT re-queue buffer yet (D1 fix)
+  v
+Publisher thread (dedicated, polls SPSC at 100us)
+  |
+  |-- If publish_raw_bayer=true:
+  |     memcpy pinned -> ROS Image msg (bayer_rggb8, 3.2 MB)     ~0.1ms
+  |
+  |-- If publish_raw_bayer=false:
+  |     cudaMemcpyAsync H2D -> debayer kernel -> cudaMemcpyAsync D2H
+  |     -> ROS Image msg (rgb8, 9.6 MB)                           ~0.5ms
+  |
+  |-- If gpu_direct=true:
+  |     Ring of 3 GPU device buffers
+  |     get_latest_gpu_frame() / release_gpu_frame() API
+  |     Zero-copy to perception via DLPack (composed launch)     ~0.01ms
+  |
+  v
+Re-queue Vimba frame buffer (safe: publisher is done reading)
 ```
 
-### Configurable Options
+---
 
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `publish_raw_bayer` | `true` | Skip debayer, 3x smaller messages, 0.1ms latency |
-| `roi_enabled` | `false` | On-sensor crop (eliminate sky), +50% max fps |
-| `roi_offset_y` | `515` | Pixels to skip from top (1/3 of 1544) |
-| `enable_ptp_sync` | `true` | IEEE 1588 sub-microsecond cross-camera timestamps |
-| `gpu_direct` | `false` | Expose pinned memory pointer for zero-copy perception |
+### Three Configuration Modes
 
-### Performance
+#### Mode 1: "Safe / Debug" -- `publish_raw_bayer=false, roi_enabled=false, gpu_direct=false`
 
-| Config | Frame Size | Max FPS (1 GigE) | Driver Latency |
-|--------|-----------|-------------------|----------------|
-| RGB8 full (mono_camera_node) | 9.6 MB | 13 fps | ~8-15ms |
-| RGB8 full (cuda_camera_node) | 9.6 MB | 13 fps | ~0.5ms |
-| Bayer raw | 3.2 MB | 39 fps | ~0.1ms |
-| Bayer + ROI 2/3 | 2.1 MB | 59 fps | ~0.1ms |
+The driver debayers on GPU and publishes standard RGB8 images. Closest behavior to the upstream `mono_camera_node` but with CUDA debayer instead of CPU. Appropriate for initial bring-up, debugging, rviz viewing, and compatibility with nodes expecting `encoding: rgb8`.
+
+> **WARNING:** Bandwidth-limited to ~13 fps per camera per GigE NIC. At 40 Hz with 6 cameras, a minimum of 4 dedicated NICs is required with zero headroom. Frame drops are likely under load.
+
+**Performance:** 9.6 MB/frame, ~13 fps max per NIC, ~0.5 ms driver latency.
+
+#### Mode 2: "Racing" -- `publish_raw_bayer=true, roi_enabled=true, gpu_direct=false` (recommended)
+
+The driver publishes raw Bayer data without debayering (3x smaller). The on-sensor ROI crop skips the top 1/3 of the frame (sky). The downstream perception ISP handles debayer + undistort + resize in one fused kernel.
+
+> **WARNING:** Raw Bayer output breaks any node expecting `encoding: rgb8`. This includes the IAC_Perception health checks, calibration targets, and aruco detection.
+
+> **WARNING:** ROI crop removes the top 1/3 of the image. On banked turns, steep hills, or overpasses, cars may appear in the cropped region. Side cameras must have ROI disabled (no sky visible) -- use per-camera overrides.
+
+> **WARNING:** rviz and foxglove display green-tinted images for `bayer_rggb8`. Cosmetic only -- the data is correct. Mode 1 is appropriate for visual debugging.
+
+**Performance:** 2.1 MB/frame, ~59 fps max per NIC, ~0.1 ms driver latency.
+
+#### Mode 3: "Zero-Copy" -- `publish_raw_bayer=true, roi_enabled=true, gpu_direct=true`
+
+Same as Mode 2, plus exposes pinned DMA buffer pointers via a shared-memory API for zero-copy frame access in a composed launch (driver + perception in the same process).
+
+> **WARNING:** This is the least tested mode. The DLPack handshake between the C++ driver and Python JAX perception has been designed but never run end-to-end. Mode 2 must be validated on hardware first.
+
+> **WARNING:** Composed launch means driver and perception share a process. A crash in perception takes down the camera driver.
+
+**Performance:** 2.1 MB/frame, ~59 fps max per NIC, ~0.01 ms transfer latency.
+
+---
+
+### Known Issues
+
+| Issue | Severity | Details |
+|-------|----------|---------|
+| **No hardware test** | CRITICAL | The `cuda_camera_node` has never received a frame from a real Mako G camera. The VmbC API call sequence is based on SDK docs and upstream VmbCPP code, but subtle differences may cause silent failures. |
+| **Buffer aliasing (D1)** | Fixed (untested) | The deferred re-queue fix is structurally correct but has not been stress-tested under actual GigE DMA timing. A race could still exist if Vimba's internal timeout re-queues a buffer before the publisher releases it. |
+| **PTP lock detection** | Untested | The driver polls `PtpStatus` every 10 seconds. Not verified with any specific PTP grandmaster or switch. The `ptp_offset` default (-37 ns) is a placeholder -- the real TAI-UTC offset depends on the PTP domain. |
+| **ROI + multi-camera** | Untested | Per-camera ROI overrides are parsed but not verified through VmbC in a multi-camera launch. |
+| **PCAP replay** | Untested | Assumes 30 fps / 33 ms frame intervals and standard GVSP packet layout. No `.pcap` files from these cameras exist to test against. |
+| **`load_settings` / `save_settings`** | Stub | Both ROS services return "not yet implemented" warnings. |
+| **Watchdog timeout** | Hardcoded 2.0s | May need tuning -- too short triggers spurious kills during PTP lock acquisition, too long delays dead-camera detection. |
+| **6-camera launch** | Untested | `all_cameras_cuda.launch.py` launches 6 instances with link-local IPs 169.254.100.1-6. Resource contention across multiple NICs has not been verified. |
+| **Dead code in publisher** | Minor | Unreachable duplicate publish code after the if/else for raw_bayer/rgb paths (~lines 1018-1024 in `cuda_camera_node.cpp`). |
+
+---
+
+### Performance (Estimated -- Not Validated)
+
+| Config | Frame Size | Max FPS (1 GigE NIC) | Driver Latency | Source |
+|--------|-----------|---------------------|----------------|--------|
+| RGB8 full (`mono_camera_node`) | 9.6 MB | ~13 fps | ~8-15 ms (CPU debayer) | Measured on upstream driver |
+| RGB8 full (`cuda_camera_node`) | 9.6 MB | ~13 fps | ~0.5 ms (CUDA debayer) | Estimated from kernel timing |
+| Bayer raw | 3.2 MB | ~39 fps | ~0.1 ms (memcpy) | Calculated from GigE bandwidth |
+| Bayer + ROI 2/3 crop | 2.1 MB | ~59 fps | ~0.1 ms (memcpy) | Calculated from GigE bandwidth |
+
+### Benchmarks to Validate on Hardware
+
+| Test | Target | Measurement | Pass Criteria |
+|------|--------|-------------|---------------|
+| Single cam FPS (RGB8, no ROI) | >=30 fps | `ros2 topic hz` | Sustained 30+ fps for 60s, 0 drops |
+| Single cam FPS (Bayer, no ROI) | >=39 fps | `ros2 topic hz` | Sustained 39+ fps for 60s |
+| Single cam FPS (Bayer + ROI) | >=55 fps | `ros2 topic hz` | Sustained 55+ fps for 60s |
+| Frame size (Bayer, no ROI) | ~3.2 MB | `ros2 topic bw` | 3.0-3.3 MB per message |
+| Frame size (Bayer + ROI) | ~2.1 MB | `ros2 topic bw` | 2.0-2.2 MB per message |
+| 6-camera simultaneous | All publish | `ros2 topic hz` per camera | All 6 topics active, none at 0 fps |
+| PTP timestamp sync | <1 us delta | Compare `header.stamp` across 2 cameras | Delta < 1 microsecond |
+| Driver latency (Bayer) | <0.5 ms | Publish timestamp - frame arrival timestamp | < 0.5 ms p99 |
+| Zero drops (10 min) | 0 drops | Driver log `[WARN] frame drop` count | Zero warns |
+| PCAP roundtrip | Identical | Record pcap, replay, compare | Pixel-identical output |
+| GPU memory (6 cams) | <500 MB | `nvidia-smi` | Driver VRAM < 500 MB |
+| CPU usage (6 cams) | <2 cores | `htop` | Total driver CPU < 200% |
+
+---
 
 ### Build
 
 ```bash
-colcon build --packages-select avt_vimba_camera --cmake-args -DBUILD_CUDA_NODE=ON
+# CUDA node (opt-in, default ON in this branch)
+colcon build --packages-select avt_vimba_camera \
+  --cmake-args -DBUILD_CUDA_NODE=ON
+
+# CPU-only (original mono_camera_node only)
+colcon build --packages-select avt_vimba_camera \
+  --cmake-args -DBUILD_CUDA_NODE=OFF
 ```
+
+Dependencies: Vimba SDK (bundled `.so` for x86_64/arm64), CUDA toolkit, OpenCV 4.x, libpcap, ROS 2 Humble/Jazzy, `image_transport`, `camera_info_manager`.
 
 ### Launch
 
 ```bash
-# Single camera (CUDA node)
-ros2 launch avt_vimba_camera cuda_camera.launch.py ip:=192.168.1.100
+# Single camera -- safe/debug mode (RGB8)
+ros2 launch avt_vimba_camera cuda_camera.launch.py \
+  ip:=169.254.100.1 \
+  publish_raw_bayer:=false \
+  roi_enabled:=false \
+  enable_ptp_sync:=false
 
-# All 6 IAC cameras
+# Single camera -- racing mode (Bayer + ROI)
+ros2 launch avt_vimba_camera cuda_camera.launch.py \
+  ip:=169.254.100.1 \
+  publish_raw_bayer:=true \
+  roi_enabled:=true \
+  enable_ptp_sync:=true
+
+# All 6 IAC cameras (link-local IPs 169.254.100.1-6)
 ros2 launch avt_vimba_camera all_cameras_cuda.launch.py
+
+# PCAP replay (no camera needed)
+ros2 launch avt_vimba_camera cuda_camera.launch.py \
+  enable_pcap:=true \
+  pcap_file:=/path/to/capture.pcap
 ```
+
+### 6-Camera IAC Layout
+
+| Name | Default IP | TF Frame |
+|------|------------|----------|
+| front_left_center | 169.254.100.1 | front_left_center_camera |
+| front_right_center | 169.254.100.2 | front_right_center_camera |
+| front_left_far | 169.254.100.3 | front_left_far_camera |
+| front_right_far | 169.254.100.4 | front_right_far_camera |
+| rear_left | 169.254.100.5 | rear_left_camera |
+| rear_right | 169.254.100.6 | rear_right_camera |
+
+### Related
+
+Full perception stack documentation including end-to-end test procedures: [`race_perception` README](https://github.com/ckwolfe/perception/blob/v0.3.0/race_perception/README.md#camera-driver-fixes-what-we-tried-why-and-whats-left)

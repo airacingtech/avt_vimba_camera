@@ -141,6 +141,24 @@ CudaCameraNode::CudaCameraNode(const rclcpp::NodeOptions& options)
     this->declare_parameter<bool>("enable_pcap", false);
     this->declare_parameter<std::string>("pcap_file", "");
 
+    // --- v2.0.0 configurable optimizations ---
+    // Raw Bayer: skip debayer in driver, publish BayerRG8 (3x smaller msgs).
+    // Perception ISP handles debayer+undistort+resize in one JAX kernel.
+    this->declare_parameter<bool>("publish_raw_bayer", true);
+
+    // ROI crop: eliminate top portion of image (sky) on-sensor.
+    // Camera only reads out the ROI → higher max frame rate.
+    // Default: crop top 1/3 of 1544 = skip 515 rows → 2064x1029 output.
+    this->declare_parameter<bool>("roi_enabled", false);
+    this->declare_parameter<int>("roi_offset_x", 0);
+    this->declare_parameter<int>("roi_offset_y", 515);
+    this->declare_parameter<int>("roi_width", 0);   // 0 = full sensor width
+    this->declare_parameter<int>("roi_height", 0);  // 0 = auto (sensor_height - offset_y)
+
+    // PTP hardware sync: sub-microsecond timestamp alignment across cameras.
+    // Requires PTP-capable Ethernet switch. Falls back to system clock if unavailable.
+    this->declare_parameter<bool>("enable_ptp_sync", true);
+
     // Acquisition parameters (feature/* namespace, matching original driver)
     this->declare_parameter<double>("feature/frame_rate", 30.0);
     this->declare_parameter<std::string>("feature/exposure_auto", "Continuous");
@@ -175,6 +193,35 @@ CudaCameraNode::CudaCameraNode(const rclcpp::NodeOptions& options)
     // Cache PTP parameters for callback thread (D6 fix)
     use_ptp_.store(this->get_parameter("use_ptp").as_bool(), std::memory_order_relaxed);
     ptp_offset_.store(this->get_parameter("ptp_offset").as_int(), std::memory_order_relaxed);
+
+    // v2.0.0 optimization flags
+    publish_raw_bayer_ = this->get_parameter("publish_raw_bayer").as_bool();
+    roi_enabled_ = this->get_parameter("roi_enabled").as_bool();
+    enable_ptp_sync_ = this->get_parameter("enable_ptp_sync").as_bool();
+
+    if (roi_enabled_) {
+        int roi_oy = this->get_parameter("roi_offset_y").as_int();
+        int roi_h = this->get_parameter("roi_height").as_int();
+        if (roi_h <= 0) roi_h = static_cast<int>(height_) - roi_oy;
+        int roi_ox = this->get_parameter("roi_offset_x").as_int();
+        int roi_w = this->get_parameter("roi_width").as_int();
+        if (roi_w <= 0) roi_w = static_cast<int>(width_);
+        // Apply ROI to effective dimensions
+        width_ = static_cast<uint32_t>(roi_w);
+        height_ = static_cast<uint32_t>(roi_h);
+        RCLCPP_INFO(this->get_logger(),
+            "ROI crop enabled: offset=(%d,%d) size=%dx%d (was %dx%d)",
+            roi_ox, roi_oy, roi_w, roi_h,
+            this->get_parameter("feature/width").as_int(),
+            this->get_parameter("feature/height").as_int());
+    }
+
+    RCLCPP_INFO(this->get_logger(),
+        "Mode: %s | ROI: %s | PTP: %s | GPU-direct: %s",
+        publish_raw_bayer_ ? "raw_bayer" : "rgb8",
+        roi_enabled_ ? "on" : "off",
+        enable_ptp_sync_ ? "on" : "off",
+        this->get_parameter("gpu_direct").as_bool() ? "on" : "off");
 
     // ---- Create image_transport CameraPublisher (fix A: topic compatibility) ----
     camera_pub_ = image_transport::create_camera_publisher(this, "~/image");
@@ -476,6 +523,18 @@ void CudaCameraNode::configure_camera_features()
     VmbInt64_t oy = static_cast<VmbInt64_t>(
         this->get_parameter("feature/offset_y").as_int());
 
+    // v2.0.0: Override with ROI crop if enabled
+    if (roi_enabled_) {
+        ox = static_cast<VmbInt64_t>(this->get_parameter("roi_offset_x").as_int());
+        oy = static_cast<VmbInt64_t>(this->get_parameter("roi_offset_y").as_int());
+        VmbInt64_t roi_w = static_cast<VmbInt64_t>(this->get_parameter("roi_width").as_int());
+        VmbInt64_t roi_h = static_cast<VmbInt64_t>(this->get_parameter("roi_height").as_int());
+        if (roi_w > 0) w = roi_w;
+        if (roi_h > 0) h = roi_h;
+        else h = static_cast<VmbInt64_t>(this->get_parameter("feature/height").as_int()) - oy;
+        RCLCPP_INFO(logger, "ROI: offset=(%ld,%ld) size=%ldx%ld", ox, oy, w, h);
+    }
+
     // Set offset to 0 first to avoid conflicts when changing size
     VmbFeatureIntSet(camera_handle_, "OffsetX", 0);
     VmbFeatureIntSet(camera_handle_, "OffsetY", 0);
@@ -568,11 +627,41 @@ void CudaCameraNode::configure_camera_features()
         RCLCPP_WARN(logger, "Invalid stream_bytes_per_second value: %s", sbps.c_str());
     }
 
-    // ---- PTP (Precision Time Protocol) ----
-    bool use_ptp = this->get_parameter("use_ptp").as_bool();
-    if (use_ptp) {
-        VmbFeatureBoolSet(camera_handle_, "PtpEnable", VmbBoolTrue);
-        RCLCPP_INFO(logger, "PTP enabled on camera");
+    // ---- PTP (Precision Time Protocol) v2.0.0 ----
+    // Two PTP params: legacy "use_ptp" (basic enable) and new "enable_ptp_sync"
+    // (full IEEE 1588 slave mode with status monitoring).
+    if (enable_ptp_sync_ || this->get_parameter("use_ptp").as_bool()) {
+        // Try IEEE 1588 PtpMode first (newer Mako firmware)
+        err = VmbFeatureEnumSet(camera_handle_, "PtpMode", "Slave");
+        if (err == VmbErrorSuccess) {
+            RCLCPP_INFO(logger, "PTP: configured as IEEE 1588 Slave");
+            // Poll for PTP lock (up to 10 seconds)
+            const char* ptp_status = nullptr;
+            for (int i = 0; i < 50; ++i) {
+                err = VmbFeatureEnumGet(camera_handle_, "PtpStatus", &ptp_status);
+                if (err == VmbErrorSuccess && ptp_status) {
+                    std::string status(ptp_status);
+                    if (status == "Slave" || status == "Master") {
+                        RCLCPP_INFO(logger, "PTP: locked (%s) after %d ms", status.c_str(), i * 200);
+                        break;
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            if (!ptp_status || std::string(ptp_status) == "Initializing") {
+                RCLCPP_WARN(logger, "PTP: not locked after 10s, timestamps may drift");
+            }
+        } else {
+            // Fall back to legacy PtpEnable boolean
+            err = VmbFeatureBoolSet(camera_handle_, "PtpEnable", VmbBoolTrue);
+            if (err == VmbErrorSuccess) {
+                RCLCPP_INFO(logger, "PTP: enabled (legacy mode)");
+            } else {
+                RCLCPP_WARN(logger, "PTP: not supported on this camera (%s)", vmb_error_str(err));
+            }
+        }
+        // Enable GevTimestamp latch for frame callback timestamps
+        VmbFeatureCommandRun(camera_handle_, "GevTimestampControlLatch");
     }
 
     // Read back actual width/height from camera
@@ -801,74 +890,130 @@ void CudaCameraNode::publisher_loop()
 
         // Get pointer to the pinned Bayer buffer
         const uint8_t* bayer_data = buffer_pool_->get_buffer(entry.buffer_index);
+        const size_t bayer_size = static_cast<size_t>(entry.width) * entry.height;
 
-        // ---- GPU debayering (no CHW output -- fix #8) ----
-        cuda_debayer(
-            bayer_data,
-            d_rgb_output_,
-            static_cast<int>(entry.width),
-            static_cast<int>(entry.height),
-            stream);
+        if (publish_raw_bayer_) {
+            // ================================================================
+            // RAW BAYER PATH: zero GPU work, minimum latency (~0.1ms)
+            // Publish BayerRG8 directly from pinned buffer.
+            // Perception ISP handles debayer+undistort+resize in one JAX kernel.
+            // ================================================================
 
-        // ---- GPU-direct: copy debayered frame into ring buffer ----
-        if (gpu_direct_enabled_) {
-            int wr = gpu_direct_write_idx_.load(std::memory_order_relaxed);
-            // Advance to a slot that is not held by the consumer
-            for (int tries = 0; tries < kMaxGpuDirectBuffers; ++tries) {
-                int candidate = (wr + tries) % kMaxGpuDirectBuffers;
-                if (!gpu_direct_slot_held_[candidate].load(std::memory_order_acquire)) {
-                    wr = candidate;
-                    break;
-                }
-            }
-            cudaMemcpyAsync(d_gpu_direct_bufs_[wr], d_rgb_output_, rgb_size,
-                            cudaMemcpyDeviceToDevice, stream);
-            // Synchronize so the buffer is fully written before exposing
-            cudaStreamSynchronize(stream);
-            {
+            // GPU-direct: expose pinned Bayer pointer directly (no GPU copy needed —
+            // pinned memory is GPU-accessible via unified addressing)
+            if (gpu_direct_enabled_) {
                 std::lock_guard<std::mutex> lock(gpu_frame_mutex_);
                 GpuFrame gf;
-                gf.device_ptr = d_gpu_direct_bufs_[wr];
+                gf.device_ptr = const_cast<uint8_t*>(bayer_data);  // pinned = GPU-accessible
                 gf.width = static_cast<int>(entry.width);
                 gf.height = static_cast<int>(entry.height);
+                gf.channels = 1;
+                gf.encoding = "bayer_rggb8";
                 gf.timestamp_ns = entry.timestamp_ns;
-                gf.buffer_index = wr;
+                gf.buffer_index = static_cast<int>(entry.buffer_index);
                 gf.frame_id = entry.frame_id;
                 latest_gpu_frame_ = gf;
             }
-            gpu_direct_write_idx_.store(
-                (wr + 1) % kMaxGpuDirectBuffers, std::memory_order_relaxed);
+
+            // Build ROS Image message — copy Bayer directly (1 byte/pixel)
+            auto img_msg = std::make_unique<sensor_msgs::msg::Image>();
+            img_msg->header.stamp.sec = static_cast<int32_t>(entry.timestamp_ns / 1000000000ULL);
+            img_msg->header.stamp.nanosec = static_cast<uint32_t>(entry.timestamp_ns % 1000000000ULL);
+            img_msg->header.frame_id = frame_id;
+            img_msg->width = entry.width;
+            img_msg->height = entry.height;
+            img_msg->encoding = "bayer_rggb8";
+            img_msg->is_bigendian = false;
+            img_msg->step = entry.width * 1;  // 1 byte/pixel
+            img_msg->data.resize(bayer_size);
+            std::memcpy(img_msg->data.data(), bayer_data, bayer_size);
+
+            // Re-queue AFTER memcpy (D1 fix)
+            if (entry.vmb_frame_index < vmb_frames_.size()) {
+                VmbCaptureFrameQueue(camera_handle_,
+                                     &vmb_frames_[entry.vmb_frame_index],
+                                     &CudaCameraNode::frame_callback);
+            }
+
+            // Publish
+            auto info_msg = std::make_unique<sensor_msgs::msg::CameraInfo>(
+                camera_info_mgr_->getCameraInfo());
+            info_msg->header = img_msg->header;
+            camera_pub_.publish(*img_msg, *info_msg);
+
+        } else {
+            // ================================================================
+            // RGB PATH: CUDA debayer, compatible output for rviz/debugging
+            // ================================================================
+
+            cuda_debayer(
+                bayer_data,
+                d_rgb_output_,
+                static_cast<int>(entry.width),
+                static_cast<int>(entry.height),
+                stream);
+
+            // GPU-direct: copy debayered RGB into ring buffer
+            if (gpu_direct_enabled_) {
+                int wr = gpu_direct_write_idx_.load(std::memory_order_relaxed);
+                for (int tries = 0; tries < kMaxGpuDirectBuffers; ++tries) {
+                    int candidate = (wr + tries) % kMaxGpuDirectBuffers;
+                    if (!gpu_direct_slot_held_[candidate].load(std::memory_order_acquire)) {
+                        wr = candidate;
+                        break;
+                    }
+                }
+                cudaMemcpyAsync(d_gpu_direct_bufs_[wr], d_rgb_output_, rgb_size,
+                                cudaMemcpyDeviceToDevice, stream);
+                cudaStreamSynchronize(stream);
+                {
+                    std::lock_guard<std::mutex> lock(gpu_frame_mutex_);
+                    GpuFrame gf;
+                    gf.device_ptr = d_gpu_direct_bufs_[wr];
+                    gf.width = static_cast<int>(entry.width);
+                    gf.height = static_cast<int>(entry.height);
+                    gf.channels = 3;
+                    gf.encoding = "rgb8";
+                    gf.timestamp_ns = entry.timestamp_ns;
+                    gf.buffer_index = wr;
+                    gf.frame_id = entry.frame_id;
+                    latest_gpu_frame_ = gf;
+                }
+                gpu_direct_write_idx_.store(
+                    (wr + 1) % kMaxGpuDirectBuffers, std::memory_order_relaxed);
+            }
+
+            // Copy RGB to host
+            cudaMemcpyAsync(h_rgb_output, d_rgb_output_, rgb_size,
+                            cudaMemcpyDeviceToHost, stream);
+            cudaStreamSynchronize(stream);
+
+            // Re-queue AFTER all reads done (D1 fix)
+            if (entry.vmb_frame_index < vmb_frames_.size()) {
+                VmbCaptureFrameQueue(camera_handle_,
+                                     &vmb_frames_[entry.vmb_frame_index],
+                                     &CudaCameraNode::frame_callback);
+            }
+
+            // Build RGB ROS Image message
+            auto img_msg = std::make_unique<sensor_msgs::msg::Image>();
+            img_msg->header.stamp.sec = static_cast<int32_t>(entry.timestamp_ns / 1000000000ULL);
+            img_msg->header.stamp.nanosec = static_cast<uint32_t>(entry.timestamp_ns % 1000000000ULL);
+            img_msg->header.frame_id = frame_id;
+            img_msg->width = entry.width;
+            img_msg->height = entry.height;
+            img_msg->encoding = "rgb8";
+            img_msg->is_bigendian = false;
+            img_msg->step = entry.width * 3;
+            const size_t frame_rgb_size = static_cast<size_t>(entry.width) * entry.height * 3;
+            img_msg->data.resize(frame_rgb_size);
+            std::memcpy(img_msg->data.data(), h_rgb_output, frame_rgb_size);
+
+            auto info_msg = std::make_unique<sensor_msgs::msg::CameraInfo>(
+                camera_info_mgr_->getCameraInfo());
+            info_msg->header = img_msg->header;
+            camera_pub_.publish(*img_msg, *info_msg);
         }
-
-        // Copy RGB result back to pinned host buffer
-        cudaMemcpyAsync(h_rgb_output, d_rgb_output_, rgb_size,
-                        cudaMemcpyDeviceToHost, stream);
-
-        // Synchronize to ensure the output is ready
-        cudaStreamSynchronize(stream);
-
-        // ---- FIX D1: Re-queue the VmbFrame now that we are done reading ----
-        if (entry.vmb_frame_index < vmb_frames_.size()) {
-            VmbCaptureFrameQueue(camera_handle_,
-                                 &vmb_frames_[entry.vmb_frame_index],
-                                 &CudaCameraNode::frame_callback);
-        }
-
-        // ---- Build ROS Image message ----
-        auto img_msg = std::make_unique<sensor_msgs::msg::Image>();
-        img_msg->header.stamp.sec = static_cast<int32_t>(entry.timestamp_ns / 1000000000ULL);
-        img_msg->header.stamp.nanosec = static_cast<uint32_t>(entry.timestamp_ns % 1000000000ULL);
-        img_msg->header.frame_id = frame_id;
-        img_msg->width = entry.width;
-        img_msg->height = entry.height;
-        img_msg->encoding = "rgb8";
-        img_msg->is_bigendian = false;
-        img_msg->step = entry.width * 3;
-
-        // Copy from pinned buffer into message data vector
-        const size_t frame_rgb_size = static_cast<size_t>(entry.width) * entry.height * 3;
-        img_msg->data.resize(frame_rgb_size);
-        std::memcpy(img_msg->data.data(), h_rgb_output, frame_rgb_size);
 
         // ---- Build CameraInfo message ----
         auto info_msg = std::make_unique<sensor_msgs::msg::CameraInfo>(

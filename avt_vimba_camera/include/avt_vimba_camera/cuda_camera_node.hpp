@@ -95,9 +95,11 @@ struct FrameEntry {
  * The device_ptr points to GPU global memory (uint8, HWC, rgb8).
  */
 struct GpuFrame {
-    void* device_ptr;        ///< GPU memory -- RGB uint8, HWC layout
+    void* device_ptr;        ///< Pointer (pinned host or GPU device memory)
     int width;               ///< Frame width in pixels
     int height;              ///< Frame height in pixels
+    int channels;            ///< 1 = BayerRG8, 3 = RGB8
+    std::string encoding;    ///< "bayer_rggb8" or "rgb8"
     uint64_t timestamp_ns;   ///< Capture timestamp (PTP or wall-clock)
     int buffer_index;        ///< Return to pool via release_gpu_frame()
     uint64_t frame_id;       ///< Monotonic Vimba frame counter
@@ -207,6 +209,11 @@ private:
     mutable std::mutex gpu_frame_mutex_;                      ///< Guards latest_gpu_frame_
     std::optional<GpuFrame> latest_gpu_frame_;                ///< Most recent frame metadata
     bool gpu_direct_enabled_ = false;                         ///< Controlled by parameter
+
+    // v2.0.0 configurable optimization flags
+    bool publish_raw_bayer_ = true;   ///< Skip debayer, publish BayerRG8 (3x smaller)
+    bool roi_enabled_ = false;        ///< On-sensor ROI crop (eliminate sky)
+    bool enable_ptp_sync_ = true;     ///< IEEE 1588 PTP hardware timestamp sync
 
     // --- ROS publishers / services ---
     image_transport::CameraPublisher camera_pub_;  ///< image_transport publisher

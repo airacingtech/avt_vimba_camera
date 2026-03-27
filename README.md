@@ -1,3 +1,14 @@
+[![ROS 2 Humble](https://img.shields.io/badge/ROS%202-Humble-blue?logo=ros&logoColor=white)](https://docs.ros.org/en/humble/)
+[![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-blue?logo=ros&logoColor=white)](https://docs.ros.org/en/jazzy/)
+[![C++14](https://img.shields.io/badge/C%2B%2B-14-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/14)
+[![CUDA](https://img.shields.io/badge/CUDA-Optional-76B900?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
+[![CMake](https://img.shields.io/badge/CMake-3.5+-064F8C?logo=cmake&logoColor=white)](https://cmake.org/)
+[![OpenCV](https://img.shields.io/badge/OpenCV-4.x-5C3EE8?logo=opencv&logoColor=white)](https://opencv.org/)
+[![Vimba SDK](https://img.shields.io/badge/Vimba-SDK-informational)](https://www.alliedvision.com/en/products/vimba-sdk/)
+[![image_transport](https://img.shields.io/badge/image__transport-ROS2-blue)](http://wiki.ros.org/image_transport)
+[![libpcap](https://img.shields.io/badge/libpcap-PCAP%20replay-informational)](https://www.tcpdump.org/)
+[![License](https://img.shields.io/badge/License-BSD-green.svg)]()
+
 # avt_vimba_camera (ROS2)
 
 This repo contains a ROS2 driver for cameras manufactured by [Allied Vision Technologies](https://www.alliedvision.com).
@@ -118,3 +129,57 @@ See the links below for more details on PTP sync.
 - [PTP Clock Sync](https://cdn.alliedvision.com/fileadmin/content/documents/products/cameras/various/appnote/GigE/PTP_IEEE1588_with_Prosilica_GT_GC_Manta.pdf) (Highly recommended if you care about exact image acquisition time)
 - [Image Timestamp on Allied Vision GigE Cameras](https://cdn.alliedvision.com/fileadmin/content/documents/products/cameras/various/appnote/GigE/Image_Timestamp.pdf) 
 - [Decimation](https://cdn.alliedvision.com/fileadmin/content/documents/products/cameras/various/appnote/various/Decimation.pdf) (Binning is similar)
+
+## cuda_camera_node (v2.0.0)
+
+Zero-copy CUDA alternative to `mono_camera_node`, designed for low-latency autonomous racing perception. Opt-in via `BUILD_CUDA_NODE` CMake option. Same external interface (topics, parameters, services).
+
+### Architecture
+
+```
+VmbC API → cudaMallocHost pinned buffers → lock-free SPSC queue → publisher thread
+                                                                      │
+                                                          ┌───────────┴──────────┐
+                                                          │ publish_raw_bayer?   │
+                                                          │                      │
+                                                     true │                false │
+                                                          │                      │
+                                                  BayerRG8 Image         CUDA debayer
+                                                  (3.2 MB, 0.1ms)       → RGB8 Image
+                                                                         (9.6 MB, 0.5ms)
+```
+
+### Configurable Options
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `publish_raw_bayer` | `true` | Skip debayer, 3x smaller messages, 0.1ms latency |
+| `roi_enabled` | `false` | On-sensor crop (eliminate sky), +50% max fps |
+| `roi_offset_y` | `515` | Pixels to skip from top (1/3 of 1544) |
+| `enable_ptp_sync` | `true` | IEEE 1588 sub-microsecond cross-camera timestamps |
+| `gpu_direct` | `false` | Expose pinned memory pointer for zero-copy perception |
+
+### Performance
+
+| Config | Frame Size | Max FPS (1 GigE) | Driver Latency |
+|--------|-----------|-------------------|----------------|
+| RGB8 full (mono_camera_node) | 9.6 MB | 13 fps | ~8-15ms |
+| RGB8 full (cuda_camera_node) | 9.6 MB | 13 fps | ~0.5ms |
+| Bayer raw | 3.2 MB | 39 fps | ~0.1ms |
+| Bayer + ROI 2/3 | 2.1 MB | 59 fps | ~0.1ms |
+
+### Build
+
+```bash
+colcon build --packages-select avt_vimba_camera --cmake-args -DBUILD_CUDA_NODE=ON
+```
+
+### Launch
+
+```bash
+# Single camera (CUDA node)
+ros2 launch avt_vimba_camera cuda_camera.launch.py ip:=192.168.1.100
+
+# All 6 IAC cameras
+ros2 launch avt_vimba_camera all_cameras_cuda.launch.py
+```

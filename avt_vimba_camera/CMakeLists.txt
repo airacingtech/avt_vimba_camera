@@ -84,7 +84,7 @@ add_dependencies_and_linkings(mono_camera_node)
 
 if(AVT_VIMBA_CAMERA_WITH_NITROS)
   target_compile_definitions(mono_camera_node PUBLIC AVT_VIMBA_CAMERA_WITH_NITROS)
-  target_link_libraries(mono_camera_node CUDA::cudart CUDA::nppc CUDA::nppicc CUDA::nppidei)
+  target_link_libraries(mono_camera_node CUDA::cudart CUDA::nppc CUDA::nppicc CUDA::nppidei CUDA::nppig)
   ament_target_dependencies(mono_camera_node
     isaac_ros_managed_nitros
     isaac_ros_nitros_image_type

@@ -69,8 +69,9 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
   {
     try
     {
-      gpu_pub_ = std::make_unique<GpuFramePublisher>(this, "~/image/nitros",
-                                                     static_cast<size_t>(gpu_buffer_pool_size_));
+      gpu_pub_ = std::make_unique<GpuFramePublisher>(
+          this, "~/image/nitros", static_cast<size_t>(gpu_buffer_pool_size_),
+          "~/image/nitros_scaled", static_cast<uint32_t>(scaled_long_edge_));
       RCLCPP_INFO(this->get_logger(), "Publishing NITROS device-memory frames on ~/image/nitros");
     }
     catch (const std::exception& e)
@@ -119,6 +120,13 @@ void MonoCameraNode::loadParams()
 #endif
   gpu_buffer_pool_size_ = this->declare_parameter("gpu_buffer_pool_size", 4);
 
+  rcl_interfaces::msg::ParameterDescriptor scaled_desc;
+  scaled_desc.description =
+      "Long edge, in pixels, of a second NITROS stream published on ~/image/nitros_scaled. The "
+      "driver derives the other edge from the camera's detected geometry so the aspect ratio is "
+      "preserved at any sensor resolution or decimation. 0 disables the stream.";
+  scaled_long_edge_ = this->declare_parameter("scaled_long_edge", 0, scaled_desc);
+
   rcl_interfaces::msg::ParameterDescriptor pcap_enable_desc;
   pcap_enable_desc.description = "Enable PCAP replay mode instead of live camera streaming";
   enable_pcap_ = this->declare_parameter("enable_pcap", false, pcap_enable_desc);
@@ -128,6 +136,7 @@ void MonoCameraNode::loadParams()
   pcap_file_ = this->declare_parameter("pcap_file", "", pcap_file_desc);
 
   this->declare_parameter("pcap_loop", false);
+  this->declare_parameter("pcap_playback_speed", 1.0);
 }
 
 void MonoCameraNode::start()

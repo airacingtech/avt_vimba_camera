@@ -45,7 +45,8 @@ private:
 class GpuFramePublisher
 {
 public:
-  GpuFramePublisher(rclcpp::Node* node, const std::string& topic, size_t pool_size);
+  GpuFramePublisher(rclcpp::Node* node, const std::string& topic, size_t pool_size,
+                    const std::string& scaled_topic, uint32_t scaled_long_edge);
   ~GpuFramePublisher();
 
   bool Publish(const std_msgs::msg::Header& header, const uint8_t* host_data, uint32_t width,
@@ -65,6 +66,17 @@ private:
   std::shared_ptr<DeviceBufferPool> pool_;
   std::shared_ptr<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
       nvidia::isaac_ros::nitros::NitrosImage>> publisher_;
+
+  void ResolveScaledSize(uint32_t width, uint32_t height);
+
+  uint32_t scaled_long_edge_{ 0 };
+  uint32_t source_width_{ 0 };
+  uint32_t source_height_{ 0 };
+  uint32_t scaled_width_{ 0 };
+  uint32_t scaled_height_{ 0 };
+  std::shared_ptr<DeviceBufferPool> scaled_pool_;
+  std::shared_ptr<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
+      nvidia::isaac_ros::nitros::NitrosImage>> scaled_publisher_;
 };
 
 }  // namespace avt_vimba_camera

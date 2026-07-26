@@ -2,6 +2,8 @@
 
 #include "avt_vimba_camera/gpu_frame_publisher.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <map>
 #include <memory>
 #include <string>
@@ -9,6 +11,7 @@
 
 #include <nppi_color_conversion.h>
 #include <nppi_data_exchange_and_initialization.h>
+#include <nppi_geometry_transforms.h>
 
 #include <isaac_ros_nitros_image_type/nitros_image_builder.hpp>
 #include <sensor_msgs/image_encodings.hpp>
@@ -34,6 +37,12 @@ bool CudaFailed(const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock, cu
   }
   RCLCPP_ERROR_THROTTLE(logger, *clock, 2000, "%s: %s", what, cudaGetErrorString(error));
   return true;
+}
+
+uint32_t SnapToMacroblock(double value)
+{
+  const uint32_t snapped = static_cast<uint32_t>(std::lround(value / 16.0)) * 16;
+  return std::max(snapped, 16u);
 }
 
 bool NppFailed(const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock, NppStatus status,
@@ -103,10 +112,20 @@ void DeviceBufferPool::Release(int index)
 }
 
 GpuFramePublisher::GpuFramePublisher(rclcpp::Node* node, const std::string& topic,
-                                     size_t pool_size)
-  : node_(node), pool_(std::make_shared<DeviceBufferPool>(pool_size))
+                                     size_t pool_size, const std::string& scaled_topic,
+                                     uint32_t scaled_long_edge)
+  : node_(node)
+  , pool_(std::make_shared<DeviceBufferPool>(pool_size))
+  , scaled_long_edge_(scaled_long_edge)
 {
-  cudaError_t error = cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking);
+  cudaError_t error = cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+  if (error != cudaSuccess)
+  {
+    RCLCPP_WARN(node_->get_logger(), "cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync): %s",
+                cudaGetErrorString(error));
+  }
+
+  error = cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking);
   if (error != cudaSuccess)
   {
     throw std::runtime_error(std::string("cudaStreamCreateWithFlags failed: ") +
@@ -140,6 +159,15 @@ GpuFramePublisher::GpuFramePublisher(rclcpp::Node* node, const std::string& topi
       nvidia::isaac_ros::nitros::NitrosImage>>(
       node_, topic, nvidia::isaac_ros::nitros::nitros_image_bgr8_t::supported_type_name,
       nvidia::isaac_ros::nitros::NitrosDiagnosticsConfig{}, rclcpp::QoS(10));
+
+  if (scaled_long_edge_ > 0)
+  {
+    scaled_pool_ = std::make_shared<DeviceBufferPool>(pool_size);
+    scaled_publisher_ = std::make_shared<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
+        nvidia::isaac_ros::nitros::NitrosImage>>(
+        node_, scaled_topic, nvidia::isaac_ros::nitros::nitros_image_bgr8_t::supported_type_name,
+        nvidia::isaac_ros::nitros::NitrosDiagnosticsConfig{}, rclcpp::QoS(10));
+  }
 }
 
 GpuFramePublisher::~GpuFramePublisher()
@@ -156,6 +184,23 @@ GpuFramePublisher::~GpuFramePublisher()
   {
     cudaStreamDestroy(stream_);
   }
+}
+
+void GpuFramePublisher::ResolveScaledSize(uint32_t width, uint32_t height)
+{
+  if (width == source_width_ && height == source_height_)
+  {
+    return;
+  }
+  source_width_ = width;
+  source_height_ = height;
+
+  const double scale = static_cast<double>(scaled_long_edge_) / std::max(width, height);
+  scaled_width_ = SnapToMacroblock(width * scale);
+  scaled_height_ = SnapToMacroblock(height * scale);
+
+  RCLCPP_INFO(node_->get_logger(), "Scaled NITROS stream: %ux%u -> %ux%u", width, height,
+              scaled_width_, scaled_height_);
 }
 
 bool GpuFramePublisher::Stage(const uint8_t* host_data, size_t bytes)
@@ -267,6 +312,38 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
     }
   }
 
+  void* scaled_out = nullptr;
+  int scaled_slot = -1;
+  int scaled_step = 0;
+  if (!failed && scaled_publisher_)
+  {
+    ResolveScaledSize(width, height);
+    scaled_step = static_cast<int>(scaled_width_) * 3;
+    scaled_slot =
+        scaled_pool_->Acquire(static_cast<size_t>(scaled_step) * scaled_height_, &scaled_out);
+    if (scaled_slot < 0)
+    {
+      RCLCPP_WARN_THROTTLE(logger, *clock, 2000,
+                           "Every scaled GPU buffer is still in the encoder; dropping downscale");
+    }
+    else
+    {
+      const NppiRect src_roi{ 0, 0, static_cast<int>(width), static_cast<int>(height) };
+      const NppiSize scaled_size{ static_cast<int>(scaled_width_),
+                                  static_cast<int>(scaled_height_) };
+      const NppiRect scaled_roi{ 0, 0, scaled_size.width, scaled_size.height };
+      if (NppFailed(logger, clock,
+                    nppiResize_8u_C3R_Ctx(dst, dst_step, size, src_roi,
+                                          static_cast<Npp8u*>(scaled_out), scaled_step, scaled_size,
+                                          scaled_roi, NPPI_INTER_LINEAR, npp_ctx_),
+                    "nppiResize_8u_C3R_Ctx"))
+      {
+        scaled_pool_->Release(scaled_slot);
+        scaled_slot = -1;
+      }
+    }
+  }
+
   if (!failed)
   {
     failed = CudaFailed(logger, clock, cudaEventRecord(done_, stream_), "cudaEventRecord") ||
@@ -276,6 +353,10 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
   if (failed)
   {
     pool_->Release(slot);
+    if (scaled_slot >= 0)
+    {
+      scaled_pool_->Release(scaled_slot);
+    }
     return false;
   }
 
@@ -294,8 +375,36 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
   catch (const std::exception& e)
   {
     pool_->Release(slot);
+    if (scaled_slot >= 0)
+    {
+      scaled_pool_->Release(scaled_slot);
+      scaled_slot = -1;
+    }
     RCLCPP_ERROR_THROTTLE(logger, *clock, 2000, "Could not publish NITROS image: %s", e.what());
     return false;
+  }
+
+  if (scaled_slot >= 0)
+  {
+    try
+    {
+      nvidia::isaac_ros::nitros::NitrosImage scaled =
+          nvidia::isaac_ros::nitros::NitrosImageBuilder()
+              .WithHeader(header)
+              .WithEncoding(sensor_msgs::image_encodings::BGR8)
+              .WithDimensions(scaled_height_, scaled_width_)
+              .WithGpuData(scaled_out)
+              .WithReleaseCallback(
+                  [pool = scaled_pool_, scaled_slot]() { pool->Release(scaled_slot); })
+              .Build();
+      scaled_publisher_->publish(scaled);
+    }
+    catch (const std::exception& e)
+    {
+      scaled_pool_->Release(scaled_slot);
+      RCLCPP_ERROR_THROTTLE(logger, *clock, 2000, "Could not publish scaled NITROS image: %s",
+                            e.what());
+    }
   }
 
   return true;

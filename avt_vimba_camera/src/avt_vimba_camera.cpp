@@ -1225,6 +1225,15 @@ void AvtVimbaCamera::pcapReplayThread()
 {
   const auto base_frame_interval = std::chrono::milliseconds(33);
   const int frames_per_seek = static_cast<int>(pcap_seek_time_ * pcap_assumed_fps_);
+
+  if (nh_->has_parameter("pcap_playback_speed"))
+  {
+    const double speed = nh_->get_parameter("pcap_playback_speed").as_double();
+    if (speed > 0.0)
+    {
+      pcap_playback_speed_.store(speed);
+    }
+  }
   
   while (pcap_thread_running_ && rclcpp::ok())
   {

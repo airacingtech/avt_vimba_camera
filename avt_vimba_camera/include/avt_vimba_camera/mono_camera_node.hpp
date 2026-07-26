@@ -75,6 +75,7 @@ private:
   std::string pcap_file_;
   bool use_gpu_pipeline_;
   int64_t gpu_buffer_pool_size_;
+  int64_t scaled_long_edge_;
 
   image_transport::CameraPublisher camera_info_pub_;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;

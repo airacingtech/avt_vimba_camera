@@ -36,6 +36,7 @@
 #include <avt_vimba_camera_msgs/srv/load_settings.hpp>
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <sensor_msgs/fill_image.hpp>
 
 using namespace std::placeholders;
 
@@ -48,10 +49,11 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
 
   // Set the frame callback (for live camera)
   cam_.setCallback(std::bind(&avt_vimba_camera::MonoCameraNode::frameCallback, this, _1));
-  
-  // Set PCAP publish callback (for PCAP replay - uses same image processing as live)
-  cam_.setPcapPublishCallback([this](const sensor_msgs::msg::Image& img, const sensor_msgs::msg::CameraInfo& ci) {
-    camera_info_pub_.publish(img, ci);
+
+  cam_.setPcapPublishCallback([this](const sensor_msgs::msg::CameraInfo& ci, const uint8_t* data,
+                                     uint32_t width, uint32_t height, uint32_t step,
+                                     const std::string& encoding) {
+    publishFrame(ci, data, width, height, step, encoding);
   });
 
   start_srv_ = create_service<std_srvs::srv::Trigger>("~/start_stream", std::bind(&MonoCameraNode::startSrvCallback, this, _1, _2, _3));
@@ -62,12 +64,30 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
 
   loadParams();
 
-  if (publish_compressed_)
+#ifdef AVT_VIMBA_CAMERA_WITH_NITROS
+  if (use_gpu_pipeline_)
   {
-    auto qos = rclcpp::QoS(rclcpp::QoSInitialization(RMW_QOS_POLICY_HISTORY_KEEP_LAST, 1));
-    qos.reliable();
-    compressed_pub = this->create_publisher<sensor_msgs::msg::CompressedImage>("~/image/compressed", qos);
+    try
+    {
+      gpu_pub_ = std::make_unique<GpuFramePublisher>(this, "~/image/nitros",
+                                                     static_cast<size_t>(gpu_buffer_pool_size_));
+      RCLCPP_INFO(this->get_logger(), "Publishing NITROS device-memory frames on ~/image/nitros");
+    }
+    catch (const std::exception& e)
+    {
+      RCLCPP_ERROR(this->get_logger(), "GPU pipeline unavailable (%s); frames stay on the host",
+                   e.what());
+      use_gpu_pipeline_ = false;
+    }
   }
+#else
+  if (use_gpu_pipeline_)
+  {
+    RCLCPP_WARN(this->get_logger(),
+                "use_gpu_pipeline is set but this driver was built without CUDA/NITROS");
+    use_gpu_pipeline_ = false;
+  }
+#endif
 
   start();
 }
@@ -86,8 +106,19 @@ void MonoCameraNode::loadParams()
   frame_id_ = this->declare_parameter("frame_id", "");
   use_measurement_time_ = this->declare_parameter("use_measurement_time", false);
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
-  publish_compressed_ = this->declare_parameter("publish_compressed", true);
-  
+
+  rcl_interfaces::msg::ParameterDescriptor gpu_desc;
+  gpu_desc.description =
+      "Upload each frame straight into device memory and publish it as a NITROS image on "
+      "~/image/nitros, so a composed Isaac ROS encode chain never sees a host-side copy. Ignored "
+      "when the driver was built without CUDA/NITROS.";
+#ifdef AVT_VIMBA_CAMERA_WITH_NITROS
+  use_gpu_pipeline_ = this->declare_parameter("use_gpu_pipeline", true, gpu_desc);
+#else
+  use_gpu_pipeline_ = this->declare_parameter("use_gpu_pipeline", false, gpu_desc);
+#endif
+  gpu_buffer_pool_size_ = this->declare_parameter("gpu_buffer_pool_size", 4);
+
   rcl_interfaces::msg::ParameterDescriptor pcap_enable_desc;
   pcap_enable_desc.description = "Enable PCAP replay mode instead of live camera streaming";
   enable_pcap_ = this->declare_parameter("enable_pcap", false, pcap_enable_desc);
@@ -111,35 +142,38 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
 {
   rclcpp::Time ros_time = this->get_clock()->now();
 
-  // getNumSubscribers() is not yet supported in Foxy, will be supported in later versions
-  // if (camera_info_pub_.getNumSubscribers() > 0)
+  AvtVimbaApi::RawFrame frame;
+  if (!api_.describeFrame(vimba_frame_ptr, frame))
+  {
+    RCLCPP_WARN_STREAM(this->get_logger(), "Could not describe frame. No image published.");
+    return;
+  }
+
+  sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
+  // Note: getCameraInfo() doesn't fill in header frame_id or stamp
+  ci.header.frame_id = frame_id_;
+  ci.header.stamp = ros_time;
+
+  publishFrame(ci, frame.data, frame.width, frame.height, frame.step, frame.encoding);
+}
+
+void MonoCameraNode::publishFrame(const sensor_msgs::msg::CameraInfo& ci, const uint8_t* data,
+                                  uint32_t width, uint32_t height, uint32_t step,
+                                  const std::string& encoding)
+{
+#ifdef AVT_VIMBA_CAMERA_WITH_NITROS
+  if (gpu_pub_)
+  {
+    gpu_pub_->Publish(ci.header, data, width, height, step, encoding);
+  }
+#endif
+
+  if (camera_info_pub_.getNumSubscribers() > 0)
   {
     sensor_msgs::msg::Image img;
-    sensor_msgs::msg::CompressedImage compressed_image;
-    if (api_.frameToImage(vimba_frame_ptr, img, compressed_image, publish_compressed_))
-    {
-      sensor_msgs::msg::CameraInfo ci = cam_.getCameraInfo();
-      // Note: getCameraInfo() doesn't fill in header frame_id or stamp
-      ci.header.frame_id = frame_id_;
-        VmbUint64_t frame_timestamp;
-        vimba_frame_ptr->GetTimestamp(frame_timestamp);
-        ci.header.stamp = rclcpp::Time(cam_.getTimestampRealTime(frame_timestamp)) + rclcpp::Duration(ptp_offset_, 0);
-//std::cout << cam_.getTimestampRealTime(frame_timestamp) << std::endl;
-	ci.header.stamp = ros_time;
-      img.header.frame_id = ci.header.frame_id;
-      img.header.stamp = ci.header.stamp;
-      camera_info_pub_.publish(img, ci);
-
-      if (publish_compressed_) {
-        compressed_image.header.frame_id = ci.header.frame_id;
-        compressed_image.header.stamp = ci.header.stamp;
-        compressed_pub->publish(compressed_image);
-      }
-    }
-    else
-    {
-      RCLCPP_WARN_STREAM(this->get_logger(), "Function frameToImage returned 0. No image published.");
-    }
+    img.header = ci.header;
+    sensor_msgs::fillImage(img, encoding, height, width, step, data);
+    camera_info_pub_.publish(img, ci);
   }
 }
 

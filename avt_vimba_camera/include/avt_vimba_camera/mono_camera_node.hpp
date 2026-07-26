@@ -47,6 +47,10 @@
 #include <avt_vimba_camera_msgs/srv/load_settings.hpp>
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
 
+#ifdef AVT_VIMBA_CAMERA_WITH_NITROS
+#include "avt_vimba_camera/gpu_frame_publisher.hpp"
+#endif
+
 
 namespace avt_vimba_camera
 {
@@ -66,15 +70,19 @@ private:
   std::string camera_info_url_;
   std::string frame_id_;
   bool use_measurement_time_;
-  bool publish_compressed_;
   int32_t ptp_offset_;
   bool enable_pcap_;
   std::string pcap_file_;
+  bool use_gpu_pipeline_;
+  int64_t gpu_buffer_pool_size_;
 
   image_transport::CameraPublisher camera_info_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
-  
+
+#ifdef AVT_VIMBA_CAMERA_WITH_NITROS
+  std::unique_ptr<GpuFramePublisher> gpu_pub_;
+#endif
+
   // Allow camera access to publishers for PCAP mode
   friend class AvtVimbaCamera;
   
@@ -87,6 +95,10 @@ private:
 
   void loadParams();
   void frameCallback(const FramePtr& vimba_frame_ptr);
+
+  void publishFrame(const sensor_msgs::msg::CameraInfo& ci, const uint8_t* data, uint32_t width,
+                    uint32_t height, uint32_t step, const std::string& encoding);
+
   void startSrvCallback(const std::shared_ptr<rmw_request_id_t> request_header,
                         const std_srvs::srv::Trigger::Request::SharedPtr req,
                         std_srvs::srv::Trigger::Response::SharedPtr res);

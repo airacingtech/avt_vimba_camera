@@ -36,10 +36,11 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
-#include <opencv2/imgproc.hpp>
+#include <sensor_msgs/image_encodings.hpp>
 
 #include <signal.h>
 #include <cstring>
+#include <map>
 #include <termios.h>
 #include <unistd.h>
 #include <sys/select.h>
@@ -1334,45 +1335,29 @@ void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
   if (nh_->has_parameter("feature/PixelFormat")) {
     pixel_format = nh_->get_parameter("feature/PixelFormat").as_string();
   }
-  
-  int bayer_code = cv::COLOR_BayerRG2RGB;
-  
-  if (pixel_format == "BayerRG8") {
-    bayer_code = cv::COLOR_BayerRG2RGB;
-  } else if (pixel_format == "BayerGB8") {
-    bayer_code = cv::COLOR_BayerGB2RGB;
-  } else if (pixel_format == "BayerGR8") {
-    bayer_code = cv::COLOR_BayerGR2RGB;
-  } else if (pixel_format == "BayerBG8") {
-    bayer_code = cv::COLOR_BayerBG2RGB;
-  } else {
-    RCLCPP_WARN_ONCE(nh_->get_logger(),
-                     "Unknown PixelFormat '%s', using BayerRG2RGB", pixel_format.c_str());
+
+  static const std::map<std::string, std::string> kPcapEncodings{
+    {"BayerRG8", sensor_msgs::image_encodings::BAYER_RGGB8},
+    {"BayerGB8", sensor_msgs::image_encodings::BAYER_GBRG8},
+    {"BayerGR8", sensor_msgs::image_encodings::BAYER_GRBG8},
+    {"BayerBG8", sensor_msgs::image_encodings::BAYER_BGGR8},
+    {"Mono8", sensor_msgs::image_encodings::MONO8},
+  };
+
+  const auto encoding = kPcapEncodings.find(pixel_format);
+  if (encoding == kPcapEncodings.end()) {
+    RCLCPP_ERROR_ONCE(nh_->get_logger(),
+                      "PCAP replay does not handle PixelFormat '%s'", pixel_format.c_str());
+    return;
   }
-  
-  RCLCPP_INFO_ONCE(nh_->get_logger(), "PCAP debayering using: %s", pixel_format.c_str());
-  
-  const cv::Mat bayer_mat(height, width, CV_8UC1, 
-                          const_cast<uint8_t*>(gige_frame.data.data()), width);
-  
-  sensor_msgs::msg::Image img;
-  img.height = height;
-  img.width = width;
-  img.encoding = "rgb8";
-  img.is_bigendian = false;
-  img.step = width * 3;
-  img.data.resize(height * width * 3);
-  
-  cv::Mat output_mat(height, width, CV_8UC3,
-                     static_cast<uint8_t*>(img.data.data()), img.step);
-  cv::demosaicing(bayer_mat, output_mat, bayer_code);
-  
+
+  RCLCPP_INFO_ONCE(nh_->get_logger(), "PCAP replaying as: %s", encoding->second.c_str());
+
   sensor_msgs::msg::CameraInfo ci = info_man_->getCameraInfo();
   ci.header.frame_id = frame_id_;
   ci.header.stamp = nh_->get_clock()->now();
-  img.header = ci.header;
-  
-  pcap_publish_callback_(img, ci);
+
+  pcap_publish_callback_(ci, gige_frame.data.data(), width, height, width, encoding->second);
 }
 
 void AvtVimbaCamera::printKeyboardControls()

@@ -11,12 +11,23 @@ endif()
 
 find_package(rclcpp REQUIRED)
 find_package(ament_cmake_auto REQUIRED)
-find_package(OpenCV REQUIRED)
 find_package(camera_info_manager REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
 ament_auto_find_build_dependencies()
+
+find_package(CUDAToolkit QUIET)
+find_package(isaac_ros_managed_nitros QUIET)
+find_package(isaac_ros_nitros_image_type QUIET)
+
+if(CUDAToolkit_FOUND AND isaac_ros_managed_nitros_FOUND AND isaac_ros_nitros_image_type_FOUND)
+  set(AVT_VIMBA_CAMERA_WITH_NITROS TRUE)
+  message(STATUS "[avt_vimba_camera]: CUDA + NITROS found, building the GPU frame path")
+else()
+  set(AVT_VIMBA_CAMERA_WITH_NITROS FALSE)
+  message(STATUS "[avt_vimba_camera]: no CUDA/NITROS, building the host-only frame path")
+endif()
 
 # Get architecture
 set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH};${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -37,7 +48,6 @@ function(add_dependencies_and_linkings arg)
     target_link_libraries(${arg}
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/64bit/libVimbaC.so
       ${CMAKE_CURRENT_SOURCE_DIR}/lib/64bit/libVimbaCPP.so
-      ${OpenCV_LIBS}
       ${PCAP_LIBRARIES}
     )
   elseif("${ARCH}" STREQUAL armv7)
@@ -58,14 +68,32 @@ function(add_dependencies_and_linkings arg)
 endfunction(add_dependencies_and_linkings)
 
 # Nodes
-ament_auto_add_library(mono_camera_node SHARED
+set(mono_camera_sources
   src/mono_camera_node.cpp
   src/avt_vimba_camera.cpp
   src/frame_observer.cpp
   src/pcap_reader.cpp
 )
+if(AVT_VIMBA_CAMERA_WITH_NITROS)
+  list(APPEND mono_camera_sources src/gpu_frame_publisher.cpp)
+endif()
+
+ament_auto_add_library(mono_camera_node SHARED ${mono_camera_sources})
 
 add_dependencies_and_linkings(mono_camera_node)
+
+if(AVT_VIMBA_CAMERA_WITH_NITROS)
+  target_compile_definitions(mono_camera_node PUBLIC AVT_VIMBA_CAMERA_WITH_NITROS)
+  target_link_libraries(mono_camera_node CUDA::cudart CUDA::nppc CUDA::nppicc CUDA::nppidei)
+  ament_target_dependencies(mono_camera_node
+    isaac_ros_managed_nitros
+    isaac_ros_nitros_image_type
+  )
+  set_target_properties(mono_camera_node PROPERTIES
+    BUILD_WITH_INSTALL_RPATH TRUE
+    BUILD_RPATH_USE_ORIGIN TRUE
+    INSTALL_RPATH_USE_LINK_PATH TRUE)
+endif()
 
 rclcpp_components_register_nodes(mono_camera_node 
   "avt_vimba_camera::MonoCameraNode")

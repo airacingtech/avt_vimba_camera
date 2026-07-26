@@ -120,7 +120,8 @@ public:
   }
   
   // PCAP frame publishing callback - uses same image processing as live camera
-  typedef std::function<void(const sensor_msgs::msg::Image&, const sensor_msgs::msg::CameraInfo&)> pcapPublishFunc;
+  typedef std::function<void(const sensor_msgs::msg::CameraInfo&, const uint8_t*, uint32_t,
+                             uint32_t, uint32_t, const std::string&)> pcapPublishFunc;
   void setPcapPublishCallback(pcapPublishFunc callback)
   {
     pcap_publish_callback_ = callback;

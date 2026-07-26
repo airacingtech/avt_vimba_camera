@@ -1299,6 +1299,21 @@ void AvtVimbaCamera::pcapReplayThread()
         std::this_thread::sleep_for(adjusted_interval - elapsed);
       }
     }
+    else if (nh_->has_parameter("pcap_loop") && nh_->get_parameter("pcap_loop").as_bool())
+    {
+      // Rewind and keep going. Without this a replay ends silently and every downstream
+      // topic goes quiet, which looks like a pipeline failure rather than end-of-capture.
+      RCLCPP_INFO(nh_->get_logger(), "PCAP replay looping after %d frames",
+                  pcap_frame_index_.load());
+      pcap_reader_->close();
+      if (!pcap_reader_->open())
+      {
+        RCLCPP_ERROR(nh_->get_logger(), "PCAP reopen failed; stopping replay");
+        pcap_thread_running_ = false;
+        break;
+      }
+      pcap_frame_index_.store(0);
+    }
     else
     {
       RCLCPP_INFO(nh_->get_logger(), "PCAP replay completed (%d frames)", pcap_frame_index_.load());
@@ -1312,15 +1327,23 @@ void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
 {
   if (!pcap_publish_callback_) return;
   
-  if (!nh_->has_parameter("feature/Width") || !nh_->has_parameter("feature/Height"))
+  // Replay geometry comes from the capture itself. The feature/* parameters configure a live
+  // camera and say nothing about what is already recorded, so they are deliberately ignored
+  // here -- a capture whose settings differ from the current config still replays correctly.
+  const VmbUint32_t width = gige_frame.width;
+  const VmbUint32_t height = gige_frame.height;
+  if (width == 0 || height == 0)
   {
     RCLCPP_ERROR_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
-                          "PCAP replay requires feature/Width and feature/Height parameters");
+                          "PCAP frame %u carried no GVSP image leader, so its resolution is "
+                          "unknown", gige_frame.frame_id);
     return;
   }
-  
-  VmbUint32_t width = static_cast<VmbUint32_t>(nh_->get_parameter("feature/Width").as_int());
-  VmbUint32_t height = static_cast<VmbUint32_t>(nh_->get_parameter("feature/Height").as_int());
+  if (!logged_pcap_geometry_)
+  {
+    logged_pcap_geometry_ = true;
+    RCLCPP_INFO(nh_->get_logger(), "PCAP replay: %ux%u detected from the capture", width, height);
+  }
   
   if (gige_frame.data.size() < height * width)
   {
@@ -1331,10 +1354,18 @@ void AvtVimbaCamera::publishPcapFrame(const GigEFrame& gige_frame)
   }
   
   // Get Bayer pattern from parameter (default BayerRG8 for Mako G-319C)
-  std::string pixel_format = "BayerRG8";
-  if (nh_->has_parameter("feature/PixelFormat")) {
-    pixel_format = nh_->get_parameter("feature/PixelFormat").as_string();
+  static const std::map<uint32_t, std::string> kPfnc{
+    {0x01080001, "Mono8"}, {0x01080008, "BayerGR8"}, {0x01080009, "BayerRG8"},
+    {0x0108000A, "BayerGB8"}, {0x0108000B, "BayerBG8"},
+  };
+  const auto pfnc = kPfnc.find(gige_frame.pixel_format);
+  if (pfnc == kPfnc.end()) {
+    RCLCPP_ERROR_ONCE(nh_->get_logger(),
+                      "PCAP replay: unsupported GVSP pixel format 0x%08x",
+                      gige_frame.pixel_format);
+    return;
   }
+  const std::string pixel_format = pfnc->second;
 
   static const std::map<std::string, std::string> kPcapEncodings{
     {"BayerRG8", sensor_msgs::image_encodings::BAYER_RGGB8},

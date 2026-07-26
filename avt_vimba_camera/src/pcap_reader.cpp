@@ -82,9 +82,27 @@ bool PcapReader::parseGVSPPacket(const uint8_t* packet_data, size_t packet_size,
   switch (packet_type)
   {
     case 0x01:  // Leader
+    {
       frame_packets_[frame_id].clear();
+      // The image leader carries pixel format and dimensions; cache them so the frame can
+      // describe itself instead of relying on a hand-configured resolution.
+      const uint8_t* leader = gvsp_data + 8;
+      if (gvsp_size >= 8 + 32)
+      {
+        GigEFrame& geom = frame_geometry_[frame_id];
+        geom.pixel_format = (static_cast<uint32_t>(leader[12]) << 24) |
+                            (static_cast<uint32_t>(leader[13]) << 16) |
+                            (static_cast<uint32_t>(leader[14]) << 8) | leader[15];
+        geom.width = (static_cast<uint32_t>(leader[16]) << 24) |
+                     (static_cast<uint32_t>(leader[17]) << 16) |
+                     (static_cast<uint32_t>(leader[18]) << 8) | leader[19];
+        geom.height = (static_cast<uint32_t>(leader[20]) << 24) |
+                      (static_cast<uint32_t>(leader[21]) << 16) |
+                      (static_cast<uint32_t>(leader[22]) << 8) | leader[23];
+      }
       clearStaleFrames();
       break;
+    }
       
     case 0x02:  // Trailer
       if (frame_packets_.find(frame_id) != frame_packets_.end())
@@ -126,7 +144,16 @@ bool PcapReader::reassembleFrame(uint32_t frame_id, GigEFrame& frame)
   
   frame.data = std::move(it->second);
   frame.frame_id = frame_id;
-  
+
+  auto geom = frame_geometry_.find(frame_id);
+  if (geom != frame_geometry_.end())
+  {
+    frame.width = geom->second.width;
+    frame.height = geom->second.height;
+    frame.pixel_format = geom->second.pixel_format;
+    frame_geometry_.erase(geom);
+  }
+
   frame_packets_.erase(it);
   frames_read_++;
   

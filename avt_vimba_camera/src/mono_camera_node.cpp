@@ -126,6 +126,8 @@ void MonoCameraNode::loadParams()
   rcl_interfaces::msg::ParameterDescriptor pcap_file_desc;
   pcap_file_desc.description = "Path to PCAP file containing GigE Vision camera data for replay";
   pcap_file_ = this->declare_parameter("pcap_file", "", pcap_file_desc);
+
+  this->declare_parameter("pcap_loop", false);
 }
 
 void MonoCameraNode::start()

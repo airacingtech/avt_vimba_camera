@@ -164,6 +164,7 @@ private:
   bool enable_pcap_;
   std::string pcap_file_path_;
   bool pcap_replay_active_;
+  bool logged_pcap_geometry_{false};
   std::shared_ptr<PcapReader> pcap_reader_;
   std::thread pcap_thread_;
   std::atomic<bool> pcap_thread_running_;

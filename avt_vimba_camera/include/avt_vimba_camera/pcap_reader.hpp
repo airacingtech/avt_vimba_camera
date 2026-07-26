@@ -20,6 +20,11 @@ namespace avt_vimba_camera
 struct GigEFrame {
   std::vector<uint8_t> data;
   uint32_t frame_id;
+  // Geometry announced by the GVSP image leader. Zero when the capture had no leader for
+  // this block, in which case the caller falls back to its configured resolution.
+  uint32_t width{0};
+  uint32_t height{0};
+  uint32_t pixel_format{0};
 };
 
 class PcapReader
@@ -46,6 +51,7 @@ private:
   
   // Frame reassembly
   std::map<uint32_t, std::vector<uint8_t>> frame_packets_;
+  std::map<uint32_t, GigEFrame> frame_geometry_;
   
   // Frame seeking support
   std::vector<long> frame_positions_;

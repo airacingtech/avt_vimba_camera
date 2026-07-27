@@ -73,7 +73,6 @@ private:
   int32_t ptp_offset_;
   bool enable_pcap_;
   std::string pcap_file_;
-  bool use_gpu_pipeline_;
   int64_t gpu_buffer_pool_size_;
   int64_t scaled_long_edge_;
 

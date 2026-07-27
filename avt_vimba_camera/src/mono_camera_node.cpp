@@ -64,29 +64,23 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
 
   loadParams();
 
+  // Whether frames can go on the GPU is settled at build time: CMake defines
+  // AVT_VIMBA_CAMERA_WITH_NITROS only when CUDA and Isaac ROS NITROS are both present, and a build
+  // without them is host-only by construction. Both paths can never be live in one binary, so
+  // there is nothing for a runtime switch to choose between. If the publisher itself fails to come
+  // up, gpu_pub_ stays null and publishFrame() keeps every frame on the host.
 #ifdef AVT_VIMBA_CAMERA_WITH_NITROS
-  if (use_gpu_pipeline_)
+  try
   {
-    try
-    {
-      gpu_pub_ = std::make_unique<GpuFramePublisher>(
-          this, "~/image/nitros", static_cast<size_t>(gpu_buffer_pool_size_),
-          "~/image/nitros_scaled", static_cast<uint32_t>(scaled_long_edge_));
-      RCLCPP_INFO(this->get_logger(), "Publishing NITROS device-memory frames on ~/image/nitros");
-    }
-    catch (const std::exception& e)
-    {
-      RCLCPP_ERROR(this->get_logger(), "GPU pipeline unavailable (%s); frames stay on the host",
-                   e.what());
-      use_gpu_pipeline_ = false;
-    }
+    gpu_pub_ = std::make_unique<GpuFramePublisher>(
+        this, "~/image/nitros", static_cast<size_t>(gpu_buffer_pool_size_),
+        "~/image/nitros_scaled", static_cast<uint32_t>(scaled_long_edge_));
+    RCLCPP_INFO(this->get_logger(), "Publishing NITROS device-memory frames on ~/image/nitros");
   }
-#else
-  if (use_gpu_pipeline_)
+  catch (const std::exception& e)
   {
-    RCLCPP_WARN(this->get_logger(),
-                "use_gpu_pipeline is set but this driver was built without CUDA/NITROS");
-    use_gpu_pipeline_ = false;
+    RCLCPP_ERROR(this->get_logger(), "GPU pipeline unavailable (%s); frames stay on the host",
+                 e.what());
   }
 #endif
 
@@ -108,16 +102,6 @@ void MonoCameraNode::loadParams()
   use_measurement_time_ = this->declare_parameter("use_measurement_time", false);
   ptp_offset_ = this->declare_parameter("ptp_offset", 0);
 
-  rcl_interfaces::msg::ParameterDescriptor gpu_desc;
-  gpu_desc.description =
-      "Upload each frame straight into device memory and publish it as a NITROS image on "
-      "~/image/nitros, so a composed Isaac ROS encode chain never sees a host-side copy. Ignored "
-      "when the driver was built without CUDA/NITROS.";
-#ifdef AVT_VIMBA_CAMERA_WITH_NITROS
-  use_gpu_pipeline_ = this->declare_parameter("use_gpu_pipeline", true, gpu_desc);
-#else
-  use_gpu_pipeline_ = this->declare_parameter("use_gpu_pipeline", false, gpu_desc);
-#endif
   gpu_buffer_pool_size_ = this->declare_parameter("gpu_buffer_pool_size", 4);
 
   rcl_interfaces::msg::ParameterDescriptor scaled_desc;

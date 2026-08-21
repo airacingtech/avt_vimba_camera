@@ -75,8 +75,15 @@ private:
   std::string pcap_file_;
   int64_t gpu_buffer_pool_size_;
   int64_t scaled_long_edge_;
+  double scaled_max_fps_;
+  double main_max_fps_;
 
-  image_transport::CameraPublisher camera_info_pub_;
+  // Deliberately NOT an image_transport::CameraPublisher. That class gates both topics on
+  // max(image_subs, info_subs), so a node wanting only the intrinsics forces every full-resolution
+  // frame to be filled and serialized as well -- measured at +0.24 cores across six cameras.
+  // Split, each topic pays only for its own subscribers.
+  image_transport::Publisher image_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info_pub_;
   std::shared_ptr<camera_info_manager::CameraInfoManager> info_man_;
 
 #ifdef AVT_VIMBA_CAMERA_WITH_NITROS

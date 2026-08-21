@@ -45,7 +45,10 @@ namespace avt_vimba_camera
 MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camera", options), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
 {
   // Set the image publisher before streaming
-  camera_info_pub_ = image_transport::create_camera_publisher(this, "~/image");
+  // Same topic names as image_transport::create_camera_publisher would produce ("~/image" plus
+  // its transport plugins, and "~/camera_info"), but as two independently gated publishers.
+  image_pub_ = image_transport::create_publisher(this, "~/image");
+  info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("~/camera_info", rclcpp::QoS(10));
 
   // Set the frame callback (for live camera)
   cam_.setCallback(std::bind(&avt_vimba_camera::MonoCameraNode::frameCallback, this, _1));
@@ -74,7 +77,8 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
   {
     gpu_pub_ = std::make_unique<GpuFramePublisher>(
         this, "~/image/nitros", static_cast<size_t>(gpu_buffer_pool_size_),
-        "~/image/nitros_scaled", static_cast<uint32_t>(scaled_long_edge_));
+        "~/image/nitros_scaled", static_cast<uint32_t>(scaled_long_edge_), scaled_max_fps_,
+        main_max_fps_);
     RCLCPP_INFO(this->get_logger(), "Publishing NITROS device-memory frames on ~/image/nitros");
   }
   catch (const std::exception& e)
@@ -90,7 +94,7 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
 MonoCameraNode::~MonoCameraNode()
 {
   cam_.stop();
-  camera_info_pub_.shutdown();
+  image_pub_.shutdown();
 }
 
 void MonoCameraNode::loadParams()
@@ -110,6 +114,23 @@ void MonoCameraNode::loadParams()
       "driver derives the other edge from the camera's detected geometry so the aspect ratio is "
       "preserved at any sensor resolution or decimation. 0 disables the stream.";
   scaled_long_edge_ = this->declare_parameter("scaled_long_edge", 0, scaled_desc);
+
+  rcl_interfaces::msg::ParameterDescriptor scaled_fps_desc;
+  scaled_fps_desc.description =
+      "Maximum publish rate, in Hz, for the scaled NITROS stream on ~/image/nitros_scaled. The "
+      "full-rate stream on ~/image/nitros is unaffected. Set this to the framerate the H.264 "
+      "encoder is configured for: its CBR rate controller divides the bitrate budget by that "
+      "number, so feeding it frames faster overspends the uplink budget and burns encoder CPU in "
+      "proportion. 0 publishes every frame.";
+  scaled_max_fps_ = this->declare_parameter("scaled_max_fps", 0.0, scaled_fps_desc);
+
+  rcl_interfaces::msg::ParameterDescriptor main_fps_desc;
+  main_fps_desc.description =
+      "Maximum publish rate, in Hz, for the full-rate NITROS stream on ~/image/nitros. Set this to "
+      "what the consumer can actually keep up with: YOLOv8 is inference bound (measured ~11.7 Hz "
+      "of detections against 37.7 Hz delivered), so publishing every frame builds NITROS messages "
+      "the detector then discards. 0 publishes every frame.";
+  main_max_fps_ = this->declare_parameter("main_max_fps", 0.0, main_fps_desc);
 
   rcl_interfaces::msg::ParameterDescriptor pcap_enable_desc;
   pcap_enable_desc.description = "Enable PCAP replay mode instead of live camera streaming";
@@ -157,18 +178,25 @@ void MonoCameraNode::publishFrame(const sensor_msgs::msg::CameraInfo& ci, const 
                                   const std::string& encoding)
 {
 #ifdef AVT_VIMBA_CAMERA_WITH_NITROS
-  if (gpu_pub_)
+  if (gpu_pub_ && gpu_pub_->HasSubscribers())
   {
     gpu_pub_->Publish(ci.header, data, width, height, step, encoding);
   }
 #endif
 
-  if (camera_info_pub_.getNumSubscribers() > 0)
+  // Intrinsics are tiny; publish them whenever anyone asks. Filling and serializing the frame is
+  // ~3 MB of work per camera per frame, so that happens only if the image itself has a consumer.
+  if (info_pub_->get_subscription_count() > 0)
+  {
+    info_pub_->publish(ci);
+  }
+
+  if (image_pub_.getNumSubscribers() > 0)
   {
     sensor_msgs::msg::Image img;
     img.header = ci.header;
     sensor_msgs::fillImage(img, encoding, height, width, step, data);
-    camera_info_pub_.publish(img, ci);
+    image_pub_.publish(img);
   }
 }
 

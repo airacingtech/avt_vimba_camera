@@ -29,7 +29,8 @@ namespace avt_vimba_camera
 // hot path is instrumented directly. Each probe records wall time AND thread CPU time, because a
 // site that blocks on the GPU has large wall time and almost no CPU -- reporting only wall would
 // make a sleeping wait look like the hottest thing in the pipeline.
-// Set AVT_VIMBA_PROFILE=0 to silence the reporting.
+// Both the collection and the 10 s report are gated by the node's 'profile' parameter (default
+// off): disabled, the hot path does no clock reads and logs nothing.
 // ---------------------------------------------------------------------------------------------
 namespace
 {
@@ -41,26 +42,36 @@ uint64_t ThreadCpuNs()
   return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
 }
 
+// Null site = profiling disabled: the scope does no clock reads at all.
 class ProfScope
 {
 public:
-  explicit ProfScope(ProfSite& s)
-    : s_(s), wall0_(std::chrono::steady_clock::now()), cpu0_(ThreadCpuNs())
+  explicit ProfScope(ProfSite* s)
+    : s_(s)
   {
+    if (s_ != nullptr)
+    {
+      wall0_ = std::chrono::steady_clock::now();
+      cpu0_ = ThreadCpuNs();
+    }
   }
   ~ProfScope()
   {
-    s_.wall_ns.fetch_add(static_cast<uint64_t>(
+    if (s_ == nullptr)
+    {
+      return;
+    }
+    s_->wall_ns.fetch_add(static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - wall0_).count()), std::memory_order_relaxed);
-    s_.cpu_ns.fetch_add(ThreadCpuNs() - cpu0_, std::memory_order_relaxed);
-    s_.n.fetch_add(1, std::memory_order_relaxed);
+    s_->cpu_ns.fetch_add(ThreadCpuNs() - cpu0_, std::memory_order_relaxed);
+    s_->n.fetch_add(1, std::memory_order_relaxed);
   }
 
 private:
-  ProfSite& s_;
-  std::chrono::steady_clock::time_point wall0_;
-  uint64_t cpu0_;
+  ProfSite* s_;
+  std::chrono::steady_clock::time_point wall0_{};
+  uint64_t cpu0_{ 0 };
 };
 
 }  // namespace
@@ -69,7 +80,8 @@ void GpuFramePublisher::ProfReport(double window_s)
 {
   static const char* kNames[kProfCount] = {
     "RefreshSubscribers", "pool.Acquire", "Stage(H2D enqueue)", "NPP debayer", "NPP resize",
-    "cudaEventSynchronize", "NITROS build+publish", "NITROS scaled", "Publish() TOTAL"
+    "BGR->I420 convert", "cudaEventSynchronize", "NITROS build+publish", "NITROS scaled",
+    "NVENC encode+pub", "Publish() TOTAL"
   };
   std::string out;
   out.reserve(1024);
@@ -191,11 +203,12 @@ void DeviceBufferPool::Release(int index)
 GpuFramePublisher::GpuFramePublisher(rclcpp::Node* node, const std::string& topic,
                                      size_t pool_size, const std::string& scaled_topic,
                                      uint32_t scaled_long_edge, double scaled_max_fps,
-                                     double main_max_fps)
+                                     double main_max_fps, bool profile)
   : node_(node)
   , pool_(std::make_shared<DeviceBufferPool>(pool_size))
   , scaled_max_fps_(scaled_max_fps)
   , main_max_fps_(main_max_fps)
+  , profile_enabled_(profile)
   , scaled_long_edge_(scaled_long_edge)
 {
   cudaError_t error = cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
@@ -235,6 +248,10 @@ GpuFramePublisher::GpuFramePublisher(rclcpp::Node* node, const std::string& topi
   npp_ctx_.nCudaDevAttrComputeCapabilityMinor = props.minor;
   cudaStreamGetFlags(stream_, &npp_ctx_.nStreamFlags);
 
+  // NVENC wants the driver-API context; the runtime calls above have already made the
+  // device's primary context current on this thread.
+  cuCtxGetCurrent(&cuda_ctx_);
+
   publisher_ = std::make_shared<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
       nvidia::isaac_ros::nitros::NitrosImage>>(
       node_, topic, nvidia::isaac_ros::nitros::nitros_image_bgr8_t::supported_type_name,
@@ -260,6 +277,30 @@ GpuFramePublisher::GpuFramePublisher(rclcpp::Node* node, const std::string& topi
     RCLCPP_INFO(node_->get_logger(), "Full-rate NITROS stream rate limited to %.1f fps",
                 main_max_fps_);
   }
+}
+
+void GpuFramePublisher::ConfigureUplinkEncoder(const NvencH264Encoder::Config& config,
+                                               bool monochrome, bool enabled)
+{
+  if (scaled_long_edge_ == 0)
+  {
+    RCLCPP_ERROR(node_->get_logger(),
+                 "In-driver uplink encode needs the scaled stream (output_long_edge > 0); "
+                 "encoder NOT armed");
+    return;
+  }
+  uplink_config_ = config;
+  uplink_monochrome_ = monochrome;
+  uplink_configured_ = true;
+  uplink_enabled_.store(enabled, std::memory_order_relaxed);
+  compressed_pub_ =
+      node_->create_publisher<sensor_msgs::msg::CompressedImage>("~/compressed", rclcpp::QoS(2));
+  RCLCPP_INFO(node_->get_logger(),
+              "In-driver NVENC uplink armed: %s %d bps (max %d), %d fps, GOP %d%s%s",
+              uplink_config_.rate_control.c_str(), uplink_config_.bitrate,
+              uplink_config_.max_bitrate, uplink_config_.framerate,
+              uplink_config_.iframe_interval, uplink_monochrome_ ? ", monochrome" : "",
+              enabled ? "" : " (disabled)");
 }
 
 void GpuFramePublisher::RefreshSubscribers()
@@ -296,7 +337,9 @@ void GpuFramePublisher::RefreshSubscribers()
 bool GpuFramePublisher::HasSubscribers()
 {
   RefreshSubscribers();
-  const bool has = main_subs_ || scaled_subs_;
+  const bool uplink = uplink_configured_ && !uplink_failed_ &&
+                      uplink_enabled_.load(std::memory_order_relaxed);
+  const bool has = main_subs_ || scaled_subs_ || uplink;
   if (has == skipping_)
   {
     skipping_ = !has;
@@ -423,27 +466,21 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
     return false;
   }
 
-  ProfScope prof_total(prof_[kProfTotal]);
+  ProfScope prof_total(profile_enabled_ ? &prof_[kProfTotal] : nullptr);
 
   // Emit a profile window periodically. Cheap: one steady_clock read per frame.
+  if (profile_enabled_)
   {
-    static const bool enabled = [] {
-      const char* e = std::getenv("AVT_VIMBA_PROFILE");
-      return e == nullptr || std::string(e) != "0";
-    }();
-    if (enabled)
+    const auto now = std::chrono::steady_clock::now();
+    if (last_prof_.time_since_epoch().count() == 0)
     {
-      const auto now = std::chrono::steady_clock::now();
-      if (last_prof_.time_since_epoch().count() == 0)
-      {
-        last_prof_ = now;
-      }
-      const double elapsed = std::chrono::duration<double>(now - last_prof_).count();
-      if (elapsed >= 10.0)
-      {
-        last_prof_ = now;
-        ProfReport(elapsed);
-      }
+      last_prof_ = now;
+    }
+    const double elapsed = std::chrono::duration<double>(now - last_prof_).count();
+    if (elapsed >= 10.0)
+    {
+      last_prof_ = now;
+      ProfReport(elapsed);
     }
   }
 
@@ -451,7 +488,7 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
   // In the telemetry-only configuration nothing consumes the full-rate stream and the scaled one
   // is rate limited, so most frames need neither and can be dropped here for free.
   {
-    ProfScope s(prof_[kProfRefreshSubs]);
+    ProfScope s(profile_enabled_ ? &prof_[kProfRefreshSubs] : nullptr);
     RefreshSubscribers();
   }
   bool publish_main = main_subs_;
@@ -469,7 +506,9 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
       last_main_ = now;
     }
   }
-  bool want_scaled = scaled_publisher_ != nullptr && scaled_subs_;
+  const bool uplink_active = uplink_configured_ && !uplink_failed_ &&
+                             uplink_enabled_.load(std::memory_order_relaxed);
+  bool want_scaled = (scaled_publisher_ != nullptr && scaled_subs_) || uplink_active;
   if (want_scaled && scaled_max_fps_ > 0.0)
   {
     const auto now = std::chrono::steady_clock::now();
@@ -493,7 +532,7 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
   void* out = nullptr;
   int slot;
   {
-    ProfScope s(prof_[kProfAcquire]);
+    ProfScope s(profile_enabled_ ? &prof_[kProfAcquire] : nullptr);
     slot = pool_->Acquire(static_cast<size_t>(dst_step) * height, &out);
   }
   if (slot < 0)
@@ -511,7 +550,7 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
 
   bool staged;
   {
-    ProfScope s(prof_[kProfStage]);
+    ProfScope s(profile_enabled_ ? &prof_[kProfStage] : nullptr);
     if (is_bgr8)
     {
       failed = CudaFailed(logger, clock,
@@ -532,7 +571,7 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
 
   if (staged)
   {
-    ProfScope s(prof_[kProfDebayer]);
+    ProfScope s(profile_enabled_ ? &prof_[kProfDebayer] : nullptr);
     const auto* src = static_cast<const Npp8u*>(staging_);
     if (grid != kBayerGrids.end())
     {
@@ -567,7 +606,7 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
   int scaled_step = 0;
   if (!failed && want_scaled)
   {
-    ProfScope s(prof_[kProfResize]);
+    ProfScope s(profile_enabled_ ? &prof_[kProfResize] : nullptr);
     ResolveScaledSize(width, height);
     scaled_step = static_cast<int>(scaled_width_) * 3;
     scaled_slot =
@@ -595,9 +634,70 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
     }
   }
 
+  // Convert the resized BGR frame into the NVENC input buffer on the same stream, so the
+  // single event sync below covers it. Monochrome streams convert luma only -- the chroma
+  // planes were set to grey once at encoder creation and no bits are spent on them.
+  bool converted = false;
+  if (!failed && uplink_active && scaled_slot >= 0)
+  {
+    ProfScope s(profile_enabled_ ? &prof_[kProfConvert] : nullptr);
+    if (uplink_encoder_ == nullptr)
+    {
+      try
+      {
+        NvencH264Encoder::Config cfg = uplink_config_;
+        cfg.width = scaled_width_;
+        cfg.height = scaled_height_;
+        uplink_encoder_ = std::make_unique<NvencH264Encoder>(cfg, cuda_ctx_);
+        if (uplink_monochrome_ && !uplink_encoder_->SetMonochrome())
+        {
+          throw std::runtime_error("SetMonochrome failed");
+        }
+        RCLCPP_INFO(logger, "NVENC uplink session open: %ux%u", scaled_width_, scaled_height_);
+      }
+      catch (const std::exception& e)
+      {
+        uplink_failed_ = true;
+        uplink_encoder_.reset();
+        RCLCPP_ERROR(logger, "NVENC uplink disabled: %s", e.what());
+      }
+    }
+    if (uplink_encoder_ != nullptr)
+    {
+      const NppiSize scaled_size{ static_cast<int>(scaled_width_),
+                                  static_cast<int>(scaled_height_) };
+      const auto* src = static_cast<const Npp8u*>(scaled_out);
+      if (uplink_monochrome_)
+      {
+        static const Npp32f kBt601[3] = { 0.114f, 0.587f, 0.299f };
+        converted = !NppFailed(
+            logger, clock,
+            nppiColorToGray_8u_C3C1R_Ctx(src, scaled_step,
+                                         reinterpret_cast<Npp8u*>(uplink_encoder_->Y()),
+                                         static_cast<int>(uplink_encoder_->Pitch()), scaled_size,
+                                         kBt601, npp_ctx_),
+            "nppiColorToGray_8u_C3C1R_Ctx");
+      }
+      else
+      {
+        Npp8u* planes[3] = { reinterpret_cast<Npp8u*>(uplink_encoder_->Y()),
+                             reinterpret_cast<Npp8u*>(uplink_encoder_->U()),
+                             reinterpret_cast<Npp8u*>(uplink_encoder_->V()) };
+        int steps[3] = { static_cast<int>(uplink_encoder_->Pitch()),
+                         static_cast<int>(uplink_encoder_->Pitch() / 2),
+                         static_cast<int>(uplink_encoder_->Pitch() / 2) };
+        // YCbCr (video range) rather than full-range YUV: it is what H.264 decoders assume.
+        converted = !NppFailed(logger, clock,
+                               nppiBGRToYCbCr420_8u_C3P3R_Ctx(src, scaled_step, planes, steps,
+                                                              scaled_size, npp_ctx_),
+                               "nppiBGRToYCbCr420_8u_C3P3R_Ctx");
+      }
+    }
+  }
+
   if (!failed)
   {
-    ProfScope s(prof_[kProfSync]);
+    ProfScope s(profile_enabled_ ? &prof_[kProfSync] : nullptr);
     failed = CudaFailed(logger, clock, cudaEventRecord(done_, stream_), "cudaEventRecord") ||
              CudaFailed(logger, clock, cudaEventSynchronize(done_), "cudaEventSynchronize");
   }
@@ -614,7 +714,7 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
 
   if (publish_main)
   {
-    ProfScope s(prof_[kProfNitrosMain]);
+    ProfScope s(profile_enabled_ ? &prof_[kProfNitrosMain] : nullptr);
     try
     {
       nvidia::isaac_ros::nitros::NitrosImage image =
@@ -648,25 +748,52 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
 
   if (scaled_slot >= 0)
   {
-    ProfScope s(prof_[kProfNitrosScaled]);
-    try
+    if (scaled_publisher_ != nullptr && scaled_subs_)
     {
-      nvidia::isaac_ros::nitros::NitrosImage scaled =
-          nvidia::isaac_ros::nitros::NitrosImageBuilder()
-              .WithHeader(header)
-              .WithEncoding(sensor_msgs::image_encodings::BGR8)
-              .WithDimensions(scaled_height_, scaled_width_)
-              .WithGpuData(scaled_out)
-              .WithReleaseCallback(
-                  [pool = scaled_pool_, scaled_slot]() { pool->Release(scaled_slot); })
-              .Build();
-      scaled_publisher_->publish(scaled);
+      ProfScope s(profile_enabled_ ? &prof_[kProfNitrosScaled] : nullptr);
+      try
+      {
+        nvidia::isaac_ros::nitros::NitrosImage scaled =
+            nvidia::isaac_ros::nitros::NitrosImageBuilder()
+                .WithHeader(header)
+                .WithEncoding(sensor_msgs::image_encodings::BGR8)
+                .WithDimensions(scaled_height_, scaled_width_)
+                .WithGpuData(scaled_out)
+                .WithReleaseCallback(
+                    [pool = scaled_pool_, scaled_slot]() { pool->Release(scaled_slot); })
+                .Build();
+        scaled_publisher_->publish(scaled);
+      }
+      catch (const std::exception& e)
+      {
+        scaled_pool_->Release(scaled_slot);
+        RCLCPP_ERROR_THROTTLE(logger, *clock, 2000, "Could not publish scaled NITROS image: %s",
+                              e.what());
+      }
     }
-    catch (const std::exception& e)
+    else
     {
+      // The downscale existed only to feed the in-driver encoder, which reads its own
+      // converted copy; the BGR buffer is free again.
       scaled_pool_->Release(scaled_slot);
-      RCLCPP_ERROR_THROTTLE(logger, *clock, 2000, "Could not publish scaled NITROS image: %s",
-                            e.what());
+    }
+  }
+
+  // The encoder's input buffer holds a synchronized copy, independent of the pool buffers.
+  if (converted)
+  {
+    ProfScope s(profile_enabled_ ? &prof_[kProfEncode] : nullptr);
+    if (uplink_encoder_->Encode(bitstream_))
+    {
+      sensor_msgs::msg::CompressedImage msg;
+      msg.header = header;
+      msg.format = "h264";
+      msg.data = bitstream_;
+      compressed_pub_->publish(msg);
+    }
+    else
+    {
+      RCLCPP_WARN_THROTTLE(logger, *clock, 2000, "NVENC encode failed; frame dropped");
     }
   }
 

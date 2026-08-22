@@ -75,7 +75,7 @@ set(mono_camera_sources
   src/pcap_reader.cpp
 )
 if(AVT_VIMBA_CAMERA_WITH_NITROS)
-  list(APPEND mono_camera_sources src/gpu_frame_publisher.cpp)
+  list(APPEND mono_camera_sources src/gpu_frame_publisher.cpp src/nvenc_h264_encoder.cpp)
 endif()
 
 ament_auto_add_library(mono_camera_node SHARED ${mono_camera_sources})
@@ -85,6 +85,10 @@ add_dependencies_and_linkings(mono_camera_node)
 if(AVT_VIMBA_CAMERA_WITH_NITROS)
   target_compile_definitions(mono_camera_node PUBLIC AVT_VIMBA_CAMERA_WITH_NITROS)
   target_link_libraries(mono_camera_node CUDA::cudart CUDA::nppc CUDA::nppicc CUDA::nppidei CUDA::nppig)
+  # In-driver NVENC uplink: nvEncodeAPI.h from /usr/local/include (nv-codec-headers),
+  # libnvidia-encode + libcuda from the display driver.
+  find_library(NVIDIA_ENCODE_LIB nvidia-encode REQUIRED)
+  target_link_libraries(mono_camera_node ${NVIDIA_ENCODE_LIB} CUDA::cuda_driver)
   ament_target_dependencies(mono_camera_node
     isaac_ros_managed_nitros
     isaac_ros_nitros_image_type

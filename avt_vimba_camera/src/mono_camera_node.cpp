@@ -78,8 +78,27 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
     gpu_pub_ = std::make_unique<GpuFramePublisher>(
         this, "~/image/nitros", static_cast<size_t>(gpu_buffer_pool_size_),
         "~/image/nitros_scaled", static_cast<uint32_t>(scaled_long_edge_), scaled_max_fps_,
-        main_max_fps_);
+        main_max_fps_, profile_);
     RCLCPP_INFO(this->get_logger(), "Publishing NITROS device-memory frames on ~/image/nitros");
+    if (encode_uplink_)
+    {
+      gpu_pub_->ConfigureUplinkEncoder(uplink_config_, uplink_monochrome_, uplink_enabled_);
+      uplink_param_cb_ = this->add_on_set_parameters_callback(
+          [this](const std::vector<rclcpp::Parameter>& params) {
+            rcl_interfaces::msg::SetParametersResult result;
+            result.successful = true;
+            for (const auto& p : params)
+            {
+              if (p.get_name() == "enabled" && gpu_pub_ != nullptr)
+              {
+                gpu_pub_->SetUplinkEnabled(p.as_bool());
+                RCLCPP_INFO(this->get_logger(), "uplink encode %s",
+                            p.as_bool() ? "enabled" : "disabled");
+              }
+            }
+            return result;
+          });
+    }
   }
   catch (const std::exception& e)
   {
@@ -131,6 +150,36 @@ void MonoCameraNode::loadParams()
       "of detections against 37.7 Hz delivered), so publishing every frame builds NITROS messages "
       "the detector then discards. 0 publishes every frame.";
   main_max_fps_ = this->declare_parameter("main_max_fps", 0.0, main_fps_desc);
+
+  rcl_interfaces::msg::ParameterDescriptor profile_desc;
+  profile_desc.description =
+      "Emit the GPU path's per-call-site CPU/wall profile as a log line every 10 s. While enabled "
+      "it also costs two thread-CPU clock reads per instrumented site per frame, so leave it off "
+      "outside of profiling sessions.";
+  profile_ = this->declare_parameter("profile", false, profile_desc);
+
+#ifdef AVT_VIMBA_CAMERA_WITH_NITROS
+  // In-driver NVENC uplink. The launch passes the same per-camera compression yaml the
+  // old encoder node consumed, so the parameter names match it. 'enabled' stays
+  // runtime-settable (ros2 param set /vimba_<cam> enabled false), like on the old node.
+  encode_uplink_ = this->declare_parameter("encode_uplink", false);
+  if (encode_uplink_)
+  {
+    uplink_config_.rate_control = this->declare_parameter("rate_control", std::string("cbr"));
+    uplink_config_.bitrate = static_cast<int32_t>(this->declare_parameter("bitrate", 100000));
+    uplink_config_.max_bitrate = static_cast<int32_t>(this->declare_parameter("max_bitrate", 0));
+    uplink_config_.framerate = static_cast<int32_t>(this->declare_parameter("framerate", 20));
+    uplink_config_.iframe_interval =
+        static_cast<int32_t>(this->declare_parameter("iframe_interval", 20));
+    uplink_config_.intra_refresh =
+        static_cast<int32_t>(this->declare_parameter("intra_refresh", 0));
+    uplink_config_.vbv_buffer_frames =
+        static_cast<int32_t>(this->declare_parameter("vbv_buffer_frames", 1));
+    uplink_config_.qp = static_cast<int32_t>(this->declare_parameter("qp", 30));
+    uplink_monochrome_ = this->declare_parameter("monochrome", false);
+    uplink_enabled_ = this->declare_parameter("enabled", true);
+  }
+#endif
 
   rcl_interfaces::msg::ParameterDescriptor pcap_enable_desc;
   pcap_enable_desc.description = "Enable PCAP replay mode instead of live camera streaming";

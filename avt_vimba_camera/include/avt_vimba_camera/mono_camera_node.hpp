@@ -77,6 +77,7 @@ private:
   int64_t scaled_long_edge_;
   double scaled_max_fps_;
   double main_max_fps_;
+  bool profile_;
 
   // Deliberately NOT an image_transport::CameraPublisher. That class gates both topics on
   // max(image_subs, info_subs), so a node wanting only the intrinsics forces every full-resolution
@@ -88,6 +89,12 @@ private:
 
 #ifdef AVT_VIMBA_CAMERA_WITH_NITROS
   std::unique_ptr<GpuFramePublisher> gpu_pub_;
+  /// In-driver NVENC uplink (replaces the per-camera isaac_ros_h264_encoder graph).
+  bool encode_uplink_{ false };
+  bool uplink_monochrome_{ false };
+  bool uplink_enabled_{ true };
+  NvencH264Encoder::Config uplink_config_{};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr uplink_param_cb_;
 #endif
 
   // Allow camera access to publishers for PCAP mode

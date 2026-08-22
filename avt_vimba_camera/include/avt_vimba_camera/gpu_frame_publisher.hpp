@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <nppdefs.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -15,10 +16,13 @@
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <std_msgs/msg/header.hpp>
 
 #include <isaac_ros_managed_nitros/managed_nitros_publisher.hpp>
 #include <isaac_ros_nitros_image_type/nitros_image.hpp>
+
+#include "avt_vimba_camera/nvenc_h264_encoder.hpp"
 
 namespace avt_vimba_camera
 {
@@ -36,8 +40,8 @@ struct ProfSite
 
 enum ProfId
 {
-  kProfRefreshSubs, kProfAcquire, kProfStage, kProfDebayer, kProfResize,
-  kProfSync, kProfNitrosMain, kProfNitrosScaled, kProfTotal, kProfCount
+  kProfRefreshSubs, kProfAcquire, kProfStage, kProfDebayer, kProfResize, kProfConvert,
+  kProfSync, kProfNitrosMain, kProfNitrosScaled, kProfEncode, kProfTotal, kProfCount
 };
 
 class DeviceBufferPool
@@ -66,16 +70,29 @@ class GpuFramePublisher
 public:
   GpuFramePublisher(rclcpp::Node* node, const std::string& topic, size_t pool_size,
                     const std::string& scaled_topic, uint32_t scaled_long_edge,
-                    double scaled_max_fps = 0.0, double main_max_fps = 0.0);
+                    double scaled_max_fps = 0.0, double main_max_fps = 0.0,
+                    bool profile = false);
   ~GpuFramePublisher();
 
   bool Publish(const std_msgs::msg::Header& header, const uint8_t* host_data, uint32_t width,
                uint32_t height, uint32_t step, const std::string& encoding);
 
-  /// False only when nothing anywhere is consuming either NITROS stream. Publish() costs a
-  /// full-frame PCIe upload plus a debayer, so with six cameras at full rate it is worth
-  /// skipping entirely while unsubscribed. Transitions are logged, never silent.
+  /// False only when nothing anywhere is consuming either NITROS stream and the in-driver
+  /// uplink encoder is off. Publish() costs a full-frame PCIe upload plus a debayer, so with
+  /// six cameras at full rate it is worth skipping entirely while unconsumed. Transitions are
+  /// logged, never silent.
   bool HasSubscribers();
+
+  /// Arm the in-driver NVENC uplink encoder (replaces the per-camera isaac_ros_h264_encoder
+  /// NITROS graph, which measured ~0.11 cores of framework overhead per camera). The session
+  /// is created lazily on the first scaled frame, when the scaled geometry is known. The
+  /// encoded stream is published as sensor_msgs/CompressedImage (format "h264") on
+  /// "~/compressed". `monochrome` keeps chroma constant so no bits are spent on it.
+  void ConfigureUplinkEncoder(const NvencH264Encoder::Config& config, bool monochrome,
+                              bool enabled);
+
+  /// Runtime toggle, wired to the node's 'enabled' parameter like the old encoder node's.
+  void SetUplinkEnabled(bool enabled) { uplink_enabled_.store(enabled, std::memory_order_relaxed); }
 
 private:
   bool Stage(const uint8_t* host_data, size_t bytes);
@@ -133,6 +150,11 @@ private:
   /// cameras accumulating into one set of counters and draining each other's.
   ProfSite prof_[kProfCount];
   void ProfReport(double window_s);
+  /// Gates BOTH the periodic profile log line and the per-frame counter collection (two
+  /// thread-CPU clock reads per instrumented site per frame). Off by default: the profile is a
+  /// diagnostic, not something to spend cycles on during a race. Set by the node's 'profile'
+  /// parameter.
+  bool profile_enabled_{ false };
 
   uint32_t scaled_long_edge_{ 0 };
   uint32_t source_width_{ 0 };
@@ -142,6 +164,19 @@ private:
   std::shared_ptr<DeviceBufferPool> scaled_pool_;
   std::shared_ptr<nvidia::isaac_ros::nitros::ManagedNitrosPublisher<
       nvidia::isaac_ros::nitros::NitrosImage>> scaled_publisher_;
+
+  /// In-driver NVENC uplink. uplink_configured_ is set once by ConfigureUplinkEncoder();
+  /// the session itself is created lazily (scaled geometry) and uplink_failed_ latches any
+  /// construction failure so a broken NVENC can never spam per frame.
+  bool uplink_configured_{ false };
+  bool uplink_failed_{ false };
+  bool uplink_monochrome_{ false };
+  std::atomic<bool> uplink_enabled_{ false };
+  NvencH264Encoder::Config uplink_config_{};
+  CUcontext cuda_ctx_{ nullptr };
+  std::unique_ptr<NvencH264Encoder> uplink_encoder_;
+  rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_pub_;
+  std::vector<uint8_t> bitstream_;
 };
 
 }  // namespace avt_vimba_camera

@@ -73,6 +73,7 @@ set(mono_camera_sources
   src/avt_vimba_camera.cpp
   src/frame_observer.cpp
   src/pcap_reader.cpp
+  src/auto_exposure.cpp
 )
 if(AVT_VIMBA_CAMERA_WITH_NITROS)
   list(APPEND mono_camera_sources src/gpu_frame_publisher.cpp src/nvenc_h264_encoder.cpp)
@@ -124,6 +125,14 @@ ament_auto_add_executable(trigger_exec
   src/exec/trigger_exec.cpp
 )
 
+# Scores a live stream with the same gradient metric the controller optimizes, so the in-driver
+# controller and the camera's own AE can be compared by something that is not either of them.
+ament_auto_add_executable(ae_benchmark
+  src/exec/ae_benchmark.cpp
+  src/auto_exposure.cpp
+)
+target_include_directories(ae_benchmark PRIVATE include)
+
 target_link_libraries(trigger_exec
   trigger_node
 )
@@ -155,6 +164,20 @@ endif()
 install(FILES ../README.md
   DESTINATION share/${PROJECT_NAME}/
 )
+
+#############
+## Testing ##
+#############
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  # The auto exposure estimator is deliberately free of Vimba and ROS dependencies so it can be
+  # tested against synthetic frames on any machine, with no camera and no running graph.
+  ament_add_gtest(test_auto_exposure test/test_auto_exposure.cpp src/auto_exposure.cpp)
+  if(TARGET test_auto_exposure)
+    target_include_directories(test_auto_exposure PRIVATE include)
+  endif()
+endif()
 
 ament_auto_package(INSTALL_TO_SHARE
   calibrations

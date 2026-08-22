@@ -395,6 +395,51 @@ double AvtVimbaCamera::getTimestamp()
   return -1.0;
 }
 
+bool AvtVimbaCamera::disableCameraAutoExposure()
+{
+  if (enable_pcap_ || !vimba_camera_ptr_)
+  {
+    return false;
+  }
+
+  // Both must go off. Leaving GainAuto on while driving ExposureTimeAbs by hand still lets the
+  // camera move the operating point underneath the host controller, which shows up as a slow
+  // oscillation that looks like a badly tuned host loop but is really two loops fighting.
+  const bool exposure_off = setFeatureValue("ExposureAuto", "Off") == VmbErrorSuccess;
+  const bool gain_off = setFeatureValue("GainAuto", "Off") == VmbErrorSuccess;
+  if (!exposure_off || !gain_off)
+  {
+    RCLCPP_WARN(nh_->get_logger(),
+                "Could not turn the camera's own AE/AGC off (ExposureAuto %s, GainAuto %s); "
+                "in-driver auto exposure would fight it, so it stays disabled",
+                exposure_off ? "off" : "FAILED", gain_off ? "off" : "FAILED");
+    return false;
+  }
+  return true;
+}
+
+bool AvtVimbaCamera::setExposureAndGain(double exposure_us, double gain_db)
+{
+  if (enable_pcap_ || !vimba_camera_ptr_)
+  {
+    return false;
+  }
+  const bool exposure_ok = setFeatureValue("ExposureTimeAbs", exposure_us) == VmbErrorSuccess;
+  const bool gain_ok = setFeatureValue("Gain", gain_db) == VmbErrorSuccess;
+  return exposure_ok && gain_ok;
+}
+
+bool AvtVimbaCamera::getExposureAndGain(double& exposure_us, double& gain_db)
+{
+  if (enable_pcap_ || !vimba_camera_ptr_)
+  {
+    return false;
+  }
+  const bool exposure_ok = getFeatureValue("ExposureTimeAbs", exposure_us);
+  const bool gain_ok = getFeatureValue("Gain", gain_db);
+  return exposure_ok && gain_ok;
+}
+
 double AvtVimbaCamera::getDeviceTemp()
 {
   if (enable_pcap_ || !vimba_camera_ptr_) return -1.0;

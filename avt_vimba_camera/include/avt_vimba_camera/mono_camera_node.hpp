@@ -35,6 +35,7 @@
 
 #include "avt_vimba_camera/avt_vimba_camera.hpp"
 #include "avt_vimba_camera/avt_vimba_api.hpp"
+#include "avt_vimba_camera/auto_exposure.hpp"
 
 #include <avt_vimba_camera_msgs/srv/detail/load_settings__struct.hpp>
 #include <avt_vimba_camera_msgs/srv/detail/save_settings__struct.hpp>
@@ -44,6 +45,8 @@
 #include <camera_info_manager/camera_info_manager.hpp>
 #include <image_transport/image_transport.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <memory>
 #include <avt_vimba_camera_msgs/srv/load_settings.hpp>
 #include <avt_vimba_camera_msgs/srv/save_settings.hpp>
 
@@ -78,6 +81,19 @@ private:
   double scaled_max_fps_;
   double main_max_fps_;
   bool profile_;
+
+  /// In-driver gradient-metric auto exposure. Null unless the 'auto_exposure.enabled'
+  /// parameter is set AND the camera's own AE/AGC could actually be turned off, so a camera
+  /// that refused to hand over control keeps its built-in AE rather than ending up with two
+  /// controllers writing the same registers.
+  AutoExposureConfig ae_config_{};
+  std::unique_ptr<AutoExposure> auto_exposure_;
+  double ae_log_period_s_{ 0.0 };
+  double ae_last_log_s_{ 0.0 };
+  /// Rolling telemetry so the benchmark can compare this against the camera's own AE.
+  rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr ae_diag_pub_;
+  void updateAutoExposure(const uint8_t* data, uint32_t width, uint32_t height, uint32_t step,
+                          const std::string& encoding, const rclcpp::Time& stamp);
 
   // Deliberately NOT an image_transport::CameraPublisher. That class gates both topics on
   // max(image_subs, info_subs), so a node wanting only the intrinsics forces every full-resolution

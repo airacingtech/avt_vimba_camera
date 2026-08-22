@@ -181,6 +181,44 @@ void MonoCameraNode::loadParams()
   }
 #endif
 
+  // ---- In-driver gradient-metric auto exposure -------------------------------------------
+  // Off by default: enabling it takes AE away from the camera, so it is always an explicit
+  // choice rather than something a stale param file can turn on by accident.
+  AutoExposureConfig ae;
+  ae.enabled = this->declare_parameter("auto_exposure.enabled", false);
+  ae.exposure_min_us = this->declare_parameter("auto_exposure.exposure_min_us", ae.exposure_min_us);
+
+  rcl_interfaces::msg::ParameterDescriptor ae_max_desc;
+  ae_max_desc.description =
+      "Upper exposure bound in microseconds. This is a motion-blur and frame-rate budget, not a "
+      "sensor limit: smear_px = focal_px * (speed / distance) * t_exp, so at 89 m/s a feature "
+      "25 m out smears about 3.7 px per millisecond of exposure, and any exposure at or above "
+      "the frame period also throttles the frame rate. Light demand beyond this bound is served "
+      "by gain instead.";
+  ae.exposure_max_us =
+      this->declare_parameter("auto_exposure.exposure_max_us", ae.exposure_max_us, ae_max_desc);
+
+  ae.gain_min_db = this->declare_parameter("auto_exposure.gain_min_db", ae.gain_min_db);
+  ae.gain_max_db = this->declare_parameter("auto_exposure.gain_max_db", ae.gain_max_db);
+  ae.grad_threshold = this->declare_parameter("auto_exposure.grad_threshold", ae.grad_threshold);
+  ae.grad_lambda = this->declare_parameter("auto_exposure.grad_lambda", ae.grad_lambda);
+  ae.probe_model = this->declare_parameter("auto_exposure.probe_model", ae.probe_model);
+  ae.probe_step_db = this->declare_parameter("auto_exposure.probe_step_db", ae.probe_step_db);
+  ae.gamma = this->declare_parameter("auto_exposure.gamma", ae.gamma);
+  ae.fallback_target_mean =
+      this->declare_parameter("auto_exposure.fallback_target_mean", ae.fallback_target_mean);
+  ae.kp = this->declare_parameter("auto_exposure.kp", ae.kp);
+  ae.deadband = this->declare_parameter("auto_exposure.deadband", ae.deadband);
+  ae.max_step_ratio = this->declare_parameter("auto_exposure.max_step_ratio", ae.max_step_ratio);
+  ae.update_hz = this->declare_parameter("auto_exposure.update_hz", ae.update_hz);
+  ae.sample_stride =
+      static_cast<int>(this->declare_parameter("auto_exposure.sample_stride",
+                                               static_cast<int64_t>(ae.sample_stride)));
+  ae.saturation_frac_max =
+      this->declare_parameter("auto_exposure.saturation_frac_max", ae.saturation_frac_max);
+  ae_log_period_s_ = this->declare_parameter("auto_exposure.log_period_s", 0.0);
+  ae_config_ = ae;
+
   rcl_interfaces::msg::ParameterDescriptor pcap_enable_desc;
   pcap_enable_desc.description = "Enable PCAP replay mode instead of live camera streaming";
   enable_pcap_ = this->declare_parameter("enable_pcap", false, pcap_enable_desc);
@@ -200,6 +238,36 @@ void MonoCameraNode::start()
 
   // Start camera
   cam_.start(ip_, guid_, frame_id_, camera_info_url_, enable_pcap_, pcap_file_);
+
+  // Auto exposure is wired up between opening the camera and streaming from it: the camera has
+  // to be open to read its current operating point and to refuse handing over AE, and it is
+  // cleaner to settle who owns exposure before the first frame arrives than to switch mid-stream.
+  if (ae_config_.enabled)
+  {
+    double exposure_us = ae_config_.exposure_max_us;
+    double gain_db = ae_config_.gain_min_db;
+    cam_.getExposureAndGain(exposure_us, gain_db);
+
+    if (cam_.disableCameraAutoExposure())
+    {
+      auto_exposure_ = std::unique_ptr<AutoExposure>(
+          new AutoExposure(ae_config_, exposure_us, gain_db));
+      ae_diag_pub_ = create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+          "~/auto_exposure", rclcpp::QoS(10));
+      RCLCPP_INFO(this->get_logger(),
+                  "in-driver gradient auto exposure active (seed %.0f us / %.1f dB, bounds "
+                  "%.0f-%.0f us, gain <= %.1f dB, %.1f Hz, stride %d)",
+                  exposure_us, gain_db, ae_config_.exposure_min_us, ae_config_.exposure_max_us,
+                  ae_config_.gain_max_db, ae_config_.update_hz, ae_config_.sample_stride);
+    }
+    else
+    {
+      RCLCPP_WARN(this->get_logger(),
+                  "in-driver auto exposure requested but the camera kept AE/AGC; "
+                  "falling back to the camera's own auto exposure");
+    }
+  }
+
   cam_.startImaging();
 }
 
@@ -219,7 +287,91 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
   ci.header.frame_id = frame_id_;
   ci.header.stamp = ros_time;
 
+  // Runs on the delivered frame rather than inside publishFrame(), because publishFrame() gates
+  // the GPU path on having subscribers. Exposure has to keep tracking the scene whether or not
+  // anything is currently consuming images, otherwise the first frame a detector sees after it
+  // subscribes is exposed for wherever the car was when the last consumer went away.
+  updateAutoExposure(frame.data, frame.width, frame.height, frame.step, frame.encoding, ros_time);
+
   publishFrame(ci, frame.data, frame.width, frame.height, frame.step, frame.encoding);
+}
+
+void MonoCameraNode::updateAutoExposure(const uint8_t* data, uint32_t width, uint32_t height,
+                                        uint32_t step, const std::string& encoding,
+                                        const rclcpp::Time& stamp)
+{
+  if (!auto_exposure_)
+  {
+    return;
+  }
+
+  const double now_s = stamp.seconds();
+  AutoExposureCommand cmd;
+  const bool write = auto_exposure_->Update(data, width, height, step, encoding, now_s, &cmd);
+
+  if (write)
+  {
+    if (!cam_.setExposureAndGain(cmd.exposure_us, cmd.gain_db))
+    {
+      // The camera clamped or rejected the setpoint. Adopt what it actually holds, so the
+      // controller keeps stepping from reality instead of from a value the hardware never took.
+      double actual_exposure = cmd.exposure_us;
+      double actual_gain = cmd.gain_db;
+      if (cam_.getExposureAndGain(actual_exposure, actual_gain))
+      {
+        auto_exposure_->SyncFromCamera(actual_exposure, actual_gain);
+      }
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                           "auto exposure write rejected (wanted %.0f us / %.1f dB, camera holds "
+                           "%.0f us / %.1f dB)",
+                           cmd.exposure_us, cmd.gain_db, actual_exposure, actual_gain);
+    }
+  }
+
+  // Telemetry goes out on every evaluated cycle, not only the ones that wrote, so the benchmark
+  // can see the metric the camera's own AE achieves as well as what this controller achieves.
+  if (cmd.metric > 0.0 || cmd.saturation_override)
+  {
+    if (ae_diag_pub_ && ae_diag_pub_->get_subscription_count() > 0)
+    {
+      diagnostic_msgs::msg::DiagnosticArray arr;
+      arr.header.stamp = stamp;
+      diagnostic_msgs::msg::DiagnosticStatus st;
+      st.name = std::string(this->get_name()) + ": auto_exposure";
+      st.hardware_id = frame_id_;
+      st.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
+      st.message = cmd.saturation_override ? "saturation override" : "tracking";
+      auto kv = [&st](const std::string& k, double v) {
+        diagnostic_msgs::msg::KeyValue e;
+        e.key = k;
+        e.value = std::to_string(v);
+        st.values.push_back(e);
+      };
+      kv("metric", cmd.metric);
+      kv("metric_brighter", cmd.metric_brighter);
+      kv("metric_darker", cmd.metric_darker);
+      kv("clipped_low_frac", cmd.clipped_low_frac);
+      kv("clipped_high_frac", cmd.clipped_high_frac);
+      kv("drive", cmd.drive);
+      kv("mean_level", cmd.mean_level);
+      kv("exposure_us", auto_exposure_->exposure_us());
+      kv("gain_db", auto_exposure_->gain_db());
+      arr.status.push_back(st);
+      ae_diag_pub_->publish(arr);
+    }
+
+    if (ae_log_period_s_ > 0.0 && now_s - ae_last_log_s_ >= ae_log_period_s_)
+    {
+      ae_last_log_s_ = now_s;
+      RCLCPP_INFO(this->get_logger(),
+                  "AE metric %.4f (bright %.4f / dark %.4f) clip %.1f%%low %.1f%%high -> "
+                  "%.0f us / %.1f dB%s",
+                  cmd.metric, cmd.metric_brighter, cmd.metric_darker,
+                  100.0 * cmd.clipped_low_frac, 100.0 * cmd.clipped_high_frac,
+                  auto_exposure_->exposure_us(), auto_exposure_->gain_db(),
+                  cmd.saturation_override ? " [sat]" : "");
+    }
+  }
 }
 
 void MonoCameraNode::publishFrame(const sensor_msgs::msg::CameraInfo& ci, const uint8_t* data,

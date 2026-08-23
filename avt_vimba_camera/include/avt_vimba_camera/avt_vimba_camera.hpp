@@ -78,8 +78,10 @@ class AvtVimbaCamera
 public:
   typedef std::function<void(const FramePtr)> frameCallbackFunc;
 
-  // AvtVimbaCamera(rclcpp::Node* owner_node);
-  AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node);
+  // Non-owning: the owner node aggregates this object, so a shared_ptr here would be a
+  // second control block over a node the component manager already owns, and its release
+  // re-entered ~MonoCameraNode and double-destroyed the CUDA stream.
+  explicit AvtVimbaCamera(rclcpp::Node* owner_node);
   void start(const std::string& ip_str, const std::string& guid_str, const std::string& frame_id,
              const std::string& camera_info_url, bool enable_pcap = false, const std::string& pcap_file = "");
   void stop();
@@ -143,7 +145,7 @@ public:
   }
 
 private:
-  rclcpp::Node::SharedPtr nh_;
+  rclcpp::Node* nh_;
   rclcpp::Clock clock_;
   AvtVimbaApi api_;
 

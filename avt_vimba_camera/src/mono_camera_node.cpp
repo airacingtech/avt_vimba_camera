@@ -44,8 +44,10 @@ namespace avt_vimba_camera
 {
 // Non-owning node handle: the component container already owns this node, so an owning
 // shared_ptr here would give cam_ a second control block and delete the node from inside its
-// own destructor.
-MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camera", options), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(this, [](rclcpp::Node *) {}))
+// own destructor. AvtVimbaCamera takes `rclcpp::Node*` and keeps it as a raw `nh_`, which is
+// already exactly that non-owning handle -- passing `this` is the whole fix, and an aliasing
+// shared_ptr with a no-op deleter would not compile against that signature anyway.
+MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camera", options), api_(this->get_logger()), cam_(this)
 {
   // Set the image publisher before streaming
   // Same topic names as image_transport::create_camera_publisher would produce ("~/image" plus

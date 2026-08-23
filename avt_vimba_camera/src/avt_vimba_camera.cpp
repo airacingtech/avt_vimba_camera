@@ -50,9 +50,8 @@ using namespace AVT::VmbAPI;
 
 namespace avt_vimba_camera
 {
-static volatile int keepRunning = 1;
 
-AvtVimbaCamera::AvtVimbaCamera(rclcpp::Node::SharedPtr owner_node)
+AvtVimbaCamera::AvtVimbaCamera(rclcpp::Node* owner_node)
   : nh_(owner_node), api_(owner_node->get_logger()), updater_(owner_node)
 {
   clock_ = rclcpp::Clock(RCL_ROS_TIME);
@@ -87,7 +86,7 @@ void AvtVimbaCamera::start(const std::string& ip_str, const std::string& guid_st
 
   frame_id_ = frame_id;
   info_man_ = std::shared_ptr<camera_info_manager::CameraInfoManager>(
-      new camera_info_manager::CameraInfoManager(nh_.get(), frame_id, camera_info_url));
+      new camera_info_manager::CameraInfoManager(nh_, frame_id, camera_info_url));
   
   enable_pcap_ = enable_pcap;
   pcap_file_path_ = pcap_file;
@@ -217,6 +216,10 @@ void AvtVimbaCamera::stop()
     pcap_replay_active_ = false;
   }
   
+  // Closing a camera that is still acquiring leaves frames queued in the GigE transport layer,
+  // and its atexit teardown then faults unlinking them. End capture first.
+  if (streaming_) stopImaging();
+
   if (vimba_camera_ptr_) vimba_camera_ptr_->Close();
   
   opened_ = false;
@@ -314,7 +317,7 @@ CameraPtr AvtVimbaCamera::openCamera(const std::string& id_str)
   VmbErrorType err = vimba_system.GetCameraByID(id_str.c_str(), camera);
   while (err != VmbErrorSuccess)
   {
-    if (keepRunning)
+    if (rclcpp::ok())
     {
       RCLCPP_WARN_STREAM(nh_->get_logger(),
                          "Could not find camera using " << id_str << ". Retrying every two seconds ...");
@@ -332,9 +335,9 @@ CameraPtr AvtVimbaCamera::openCamera(const std::string& id_str)
 
   // open camera
   err = camera->Open(VmbAccessModeFull);
-  while (err != VmbErrorSuccess && keepRunning)
+  while (err != VmbErrorSuccess)
   {
-    if (keepRunning)
+    if (rclcpp::ok())
     {
       RCLCPP_WARN_STREAM(nh_->get_logger(), "Could not open camera. Retrying every two seconds ...");
       err = camera->Open(VmbAccessModeFull);

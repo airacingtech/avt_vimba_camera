@@ -39,6 +39,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 
 #include <string>
+#include <atomic>
 #include <map>
 
 using AVT::VmbAPI::CameraPtr;
@@ -54,11 +55,25 @@ public:
   {
   }
 
+  // VmbShutdown is process-wide, not reference-counted, so with several camera nodes composed
+  // into one container only the last one may call it -- and it must be called, since leaving the
+  // GigE transport layer live means its own atexit teardown runs after CUDA and the RMW are gone
+  // and faults unlinking queued frames.
+  ~AvtVimbaApi()
+  {
+    if (started_ && started_instances_.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    {
+      vs.Shutdown();
+    }
+  }
+
   void start()
   {
     VmbErrorType err = vs.Startup();
     if (VmbErrorSuccess == err)
     {
+      started_ = true;
+      started_instances_.fetch_add(1, std::memory_order_acq_rel);
       RCLCPP_INFO_STREAM(logger_, "[Vimba System]: AVT Vimba System initialized successfully");
       listAvailableCameras();
     }
@@ -251,12 +266,13 @@ public:
 private:
   VimbaSystem& vs;
   rclcpp::Logger logger_;
+  bool started_ = false;
+  static inline std::atomic<int> started_instances_{ 0 };
 
   void listAvailableCameras()
   {
     RCLCPP_INFO(logger_, "Searching for cameras ...");
     CameraPtrVector cameras;
-    if (VmbErrorSuccess == vs.Startup())
     {
       if (VmbErrorSuccess == vs.GetCameras(cameras))
       {
@@ -325,10 +341,6 @@ private:
       {
         RCLCPP_WARN(logger_, "Could not get cameras from Vimba System");
       }
-    }
-    else
-    {
-      RCLCPP_WARN(logger_, "Could not start Vimba System");
     }
   }
 };

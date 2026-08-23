@@ -31,8 +31,10 @@
   <depend>message_filters</depend>
   <depend>avt_vimba_camera_msgs</depend>
 
+  <build_depend>isaac_ros_gxf</build_depend>
   <build_depend>isaac_ros_managed_nitros</build_depend>
   <build_depend>isaac_ros_nitros_image_type</build_depend>
+  <exec_depend>isaac_ros_gxf</exec_depend>
   <exec_depend>isaac_ros_managed_nitros</exec_depend>
   <exec_depend>isaac_ros_nitros_image_type</exec_depend>
 

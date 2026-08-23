@@ -42,7 +42,10 @@ using namespace std::placeholders;
 
 namespace avt_vimba_camera
 {
-MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camera", options), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(dynamic_cast<rclcpp::Node * >(this)))
+// Non-owning node handle: the component container already owns this node, so an owning
+// shared_ptr here would give cam_ a second control block and delete the node from inside its
+// own destructor.
+MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camera", options), api_(this->get_logger()), cam_(std::shared_ptr<rclcpp::Node>(this, [](rclcpp::Node *) {}))
 {
   // Set the image publisher before streaming
   // Same topic names as image_transport::create_camera_publisher would produce ("~/image" plus

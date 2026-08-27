@@ -25,6 +25,26 @@ void Check(NVENCSTATUS status, const char* what)
   }
 }
 
+/// "p1".."p7" -> preset GUID. Anything unrecognised falls back to P3, the value this encoder
+/// used before the knob existed, so a typo degrades to the old behaviour instead of throwing.
+NV_ENC_TUNING_INFO TuningInfo(const std::string& name)
+{
+  if (name == "ultra_low_latency") return NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+  if (name == "high_quality") return NV_ENC_TUNING_INFO_HIGH_QUALITY;
+  return NV_ENC_TUNING_INFO_LOW_LATENCY;
+}
+
+GUID PresetGuid(const std::string& name)
+{
+  if (name == "p1") return NV_ENC_PRESET_P1_GUID;
+  if (name == "p2") return NV_ENC_PRESET_P2_GUID;
+  if (name == "p4") return NV_ENC_PRESET_P4_GUID;
+  if (name == "p5") return NV_ENC_PRESET_P5_GUID;
+  if (name == "p6") return NV_ENC_PRESET_P6_GUID;
+  if (name == "p7") return NV_ENC_PRESET_P7_GUID;
+  return NV_ENC_PRESET_P3_GUID;
+}
+
 }  // namespace
 
 NvencH264Encoder::NvencH264Encoder(const Config& config, CUcontext cuda_context)
@@ -45,13 +65,19 @@ NvencH264Encoder::NvencH264Encoder(const Config& config, CUcontext cuda_context)
   open.apiVersion = NVENCAPI_VERSION;
   Check(fn_.nvEncOpenEncodeSessionEx(&open, &session_), "nvEncOpenEncodeSessionEx");
 
-  // Preset config first, then apply the uplink's rate control on top.
+  // Preset config first, then apply the uplink's rate control on top. The same preset GUID has
+  // to go to both nvEncGetEncodePresetConfigEx and nvEncInitializeEncoder -- fetching P3's config
+  // and then initialising as P5 would silently mix two presets' tuning.
+  const GUID preset_guid = PresetGuid(config.preset);
+  // Same value must reach nvEncGetEncodePresetConfigEx and nvEncInitializeEncoder, for the same
+  // reason as the preset: fetching one tuning's config and initialising with another mixes two
+  // rate-control setups.
+  const NV_ENC_TUNING_INFO tuning = TuningInfo(config.tuning);
   NV_ENC_PRESET_CONFIG preset{};
   preset.version = NV_ENC_PRESET_CONFIG_VER;
   preset.presetCfg.version = NV_ENC_CONFIG_VER;
-  Check(fn_.nvEncGetEncodePresetConfigEx(session_, NV_ENC_CODEC_H264_GUID,
-                                         NV_ENC_PRESET_P3_GUID,
-                                         NV_ENC_TUNING_INFO_LOW_LATENCY, &preset),
+  Check(fn_.nvEncGetEncodePresetConfigEx(session_, NV_ENC_CODEC_H264_GUID, preset_guid,
+                                         tuning, &preset),
         "nvEncGetEncodePresetConfigEx");
   NV_ENC_CONFIG enc_cfg = preset.presetCfg;
 
@@ -61,6 +87,28 @@ NvencH264Encoder::NvencH264Encoder(const Config& config, CUcontext cuda_context)
   enc_cfg.frameIntervalP = 1;  // IPPP..., no B frames on the low-latency uplink
   enc_cfg.encodeCodecConfig.h264Config.idrPeriod = gop;
   enc_cfg.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+
+  // High profile is a straight compression win at this bitrate: it turns on CABAC (entropy
+  // coding, worth roughly 5-10% bitrate over CAVLC on its own) and the adaptive 8x8 transform,
+  // which suits the large flat regions -- tarmac, sky, wall -- that dominate these views. Left
+  // at "auto" the preset picks, which is not guaranteed to be High. Baseline forbids CABAC, so
+  // entropy coding is only forced when the profile actually permits it.
+  if (config.profile == "high" || config.profile == "main")
+  {
+    enc_cfg.profileGUID = config.profile == "high" ? NV_ENC_H264_PROFILE_HIGH_GUID
+                                                  : NV_ENC_H264_PROFILE_MAIN_GUID;
+    enc_cfg.encodeCodecConfig.h264Config.entropyCodingMode =
+        NV_ENC_H264_ENTROPY_CODING_MODE_CABAC;
+    if (config.profile == "high")
+    {
+      enc_cfg.encodeCodecConfig.h264Config.adaptiveTransformMode =
+          NV_ENC_H264_ADAPTIVE_TRANSFORM_ENABLE;
+    }
+  }
+  else if (config.profile == "baseline")
+  {
+    enc_cfg.profileGUID = NV_ENC_H264_PROFILE_BASELINE_GUID;
+  }
   if (config.intra_refresh > 0)
   {
     enc_cfg.encodeCodecConfig.h264Config.enableIntraRefresh = 1;
@@ -89,13 +137,22 @@ NvencH264Encoder::NvencH264Encoder(const Config& config, CUcontext cuda_context)
         static_cast<uint32_t>(config.vbv_buffer_frames) : 1u;
     rc.vbvBufferSize = rc.averageBitRate * frames / fps;
     rc.vbvInitialDelay = rc.vbvBufferSize;
+
+    // Spatial AQ only. Temporal AQ is deliberately not offered: it needs lookahead, and any
+    // lookahead at 10 fps costs 100 ms of latency per frame of depth on a link whose whole
+    // point is being current. aqStrength is a 4-bit field, so 1..15; 0 leaves AQ off entirely.
+    if (config.aq > 0)
+    {
+      rc.enableAQ = 1;
+      rc.aqStrength = static_cast<uint32_t>(config.aq > 15 ? 15 : config.aq);
+    }
   }
 
   NV_ENC_INITIALIZE_PARAMS init{};
   init.version = NV_ENC_INITIALIZE_PARAMS_VER;
   init.encodeGUID = NV_ENC_CODEC_H264_GUID;
-  init.presetGUID = NV_ENC_PRESET_P3_GUID;
-  init.tuningInfo = NV_ENC_TUNING_INFO_LOW_LATENCY;
+  init.presetGUID = preset_guid;
+  init.tuningInfo = tuning;
   init.encodeWidth = width_;
   init.encodeHeight = height_;
   init.darWidth = width_;

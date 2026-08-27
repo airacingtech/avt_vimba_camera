@@ -39,6 +39,16 @@ public:
     int32_t vbv_buffer_frames{ 1 };
     int32_t qp{ 30 };              // used only for rate_control "cqp"
     std::string rate_control{ "cbr" };  // cbr | vbr | cqp
+    // Quality knobs. All three are resolved inside NVENC and cost the host nothing, which is
+    // why they are the right lever when the CPU budget is one core.
+    std::string preset{ "p3" };    // p1..p7: slower preset = better compression, more encoder GPU
+    int32_t aq{ 0 };               // spatial adaptive quantisation strength 1..15; 0 = off
+    std::string profile{ "auto" }; // auto | baseline | main | high ("high" => CABAC + 8x8)
+    // low_latency | ultra_low_latency | high_quality. Picks NVENC's tuning preset, which decides
+    // how hard the rate controller is allowed to defer bits. ultra_low_latency holds every frame
+    // to its own budget (lowest delay, some quality cost on scene changes); high_quality lets it
+    // defer and is wrong for a live uplink.
+    std::string tuning{ "low_latency" };
   };
 
   /// Throws std::runtime_error when NVENC cannot be opened/configured.

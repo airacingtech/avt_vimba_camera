@@ -370,13 +370,16 @@ void AvtVimbaCamera::frameCallback(const FramePtr vimba_frame_ptr)
   camera_state_ = OK;
   diagnostic_msg_ = "Camera operating normally";
 
-  // Create-and-join is equivalent to calling straight through, and measurement showed no
-  // throughput difference either way (35.6 fps both ways with the encoders subscribed), so this
-  // only costs a clone, a stack mapping and a join futex per frame. Kept as-is for now because
-  // the callback blocks in cudaEventSynchronize; the worthwhile change is a *persistent* worker
-  // thread per camera, not a plain direct call.
-  std::thread thread_callback = std::thread(userFrameCallback, vimba_frame_ptr);
-  thread_callback.join();
+  // Straight through, no thread. The old code created a std::thread per frame and immediately
+  // joined it, which is semantically identical to calling directly -- the Vimba delivery thread
+  // blocked in join() for exactly as long as it now blocks in the callback -- but cost a clone,
+  // an 8 MB stack mapping/unmapping, a join futex, AND a fresh CUDA-runtime primary-context
+  // attach on every single frame. At 6 cameras x ~30 fps that was ~180 thread create/destroy
+  // cycles per second buying nothing. It also kept 6 transient threads permanently churning in
+  // the process's thread table. A persistent worker thread per camera would only be worth it if
+  // the callback could overlap the next frame's GVSP reassembly, which on a one-core budget it
+  // cannot.
+  userFrameCallback(vimba_frame_ptr);
 }
 
 CameraState AvtVimbaCamera::getCameraState() const
@@ -396,51 +399,6 @@ double AvtVimbaCamera::getTimestamp()
     return static_cast<double>(ticks) / static_cast<double>(freq);
   }
   return -1.0;
-}
-
-bool AvtVimbaCamera::disableCameraAutoExposure()
-{
-  if (enable_pcap_ || !vimba_camera_ptr_)
-  {
-    return false;
-  }
-
-  // Both must go off. Leaving GainAuto on while driving ExposureTimeAbs by hand still lets the
-  // camera move the operating point underneath the host controller, which shows up as a slow
-  // oscillation that looks like a badly tuned host loop but is really two loops fighting.
-  const bool exposure_off = setFeatureValue("ExposureAuto", "Off") == VmbErrorSuccess;
-  const bool gain_off = setFeatureValue("GainAuto", "Off") == VmbErrorSuccess;
-  if (!exposure_off || !gain_off)
-  {
-    RCLCPP_WARN(nh_->get_logger(),
-                "Could not turn the camera's own AE/AGC off (ExposureAuto %s, GainAuto %s); "
-                "in-driver auto exposure would fight it, so it stays disabled",
-                exposure_off ? "off" : "FAILED", gain_off ? "off" : "FAILED");
-    return false;
-  }
-  return true;
-}
-
-bool AvtVimbaCamera::setExposureAndGain(double exposure_us, double gain_db)
-{
-  if (enable_pcap_ || !vimba_camera_ptr_)
-  {
-    return false;
-  }
-  const bool exposure_ok = setFeatureValue("ExposureTimeAbs", exposure_us) == VmbErrorSuccess;
-  const bool gain_ok = setFeatureValue("Gain", gain_db) == VmbErrorSuccess;
-  return exposure_ok && gain_ok;
-}
-
-bool AvtVimbaCamera::getExposureAndGain(double& exposure_us, double& gain_db)
-{
-  if (enable_pcap_ || !vimba_camera_ptr_)
-  {
-    return false;
-  }
-  const bool exposure_ok = getFeatureValue("ExposureTimeAbs", exposure_us);
-  const bool gain_ok = getFeatureValue("Gain", gain_db);
-  return exposure_ok && gain_ok;
 }
 
 double AvtVimbaCamera::getDeviceTemp()

@@ -120,21 +120,6 @@ public:
   {
     force_stopped_ = force_stop;
   }
-
-  /// Exposure/gain access for the in-driver auto exposure controller. These are the only
-  /// features written on the streaming hot path, so they are exposed directly rather than
-  /// going through the generic 'feature/*' parameter machinery, which applies features in
-  /// alphabetical order at configuration time and is not meant to be driven per frame.
-  ///
-  /// Both return false if the camera rejected or clamped the write, in which case the caller
-  /// should re-read with getExposureAndGain() rather than assume its setpoint took.
-  bool setExposureAndGain(double exposure_us, double gain_db);
-  bool getExposureAndGain(double& exposure_us, double& gain_db);
-
-  /// Hand exposure and gain control to the host by turning the camera's own AE/AGC off.
-  /// Leaving them on while also writing ExposureTimeAbs makes the two controllers fight: the
-  /// camera silently overwrites whatever the host set on the very next frame.
-  bool disableCameraAutoExposure();
   
   // PCAP frame publishing callback - uses same image processing as live camera
   typedef std::function<void(const sensor_msgs::msg::CameraInfo&, const uint8_t*, uint32_t,

@@ -32,6 +32,9 @@
 
 #include "avt_vimba_camera/frame_observer.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <iostream>
 
 FrameObserver::FrameObserver(CameraPtr cam_ptr, Callback callback)
@@ -53,7 +56,23 @@ void FrameObserver::FrameReceived(const FramePtr vimba_frame_ptr)
         break;
       }
       case VmbFrameStatusIncomplete: {
-        std::cout << "ERR: FrameObserver VmbFrameStatusIncomplete" << std::endl;
+        // Rate-limited on purpose. Incomplete frames arrive in floods exactly when the process is
+        // already CPU-starved (GVSP packets get dropped because reassembly cannot keep up), and an
+        // unbuffered std::endl per bad frame down a tmux pipe turns the symptom into a second
+        // cause. Report a running total once a second instead.
+        static std::atomic<uint64_t> incomplete{ 0 };
+        static std::atomic<int64_t> next_report{ 0 };
+        const uint64_t n = ++incomplete;
+        const int64_t now_s = static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+        int64_t due = next_report.load(std::memory_order_relaxed);
+        if (now_s >= due && next_report.compare_exchange_strong(due, now_s + 1))
+        {
+          std::cout << "ERR: FrameObserver VmbFrameStatusIncomplete (total " << n << ")"
+                    << std::endl;
+        }
         break;
       }
       case VmbFrameStatusTooSmall: {

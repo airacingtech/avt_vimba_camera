@@ -511,16 +511,41 @@ bool GpuFramePublisher::Publish(const std_msgs::msg::Header& header, const uint8
   bool want_scaled = (scaled_publisher_ != nullptr && scaled_subs_) || uplink_active;
   if (want_scaled && scaled_max_fps_ > 0.0)
   {
+    // Credit-based, NOT gap-based. The old test dropped a frame unless a full 1/scaled_max_fps
+    // had elapsed since the last frame let through, which aliases to HALF RATE whenever the
+    // incoming rate sits just above the limit: measured on the car with capture at 10.6 fps
+    // (94.3 ms apart) against a 10 fps limit, every second frame arrived 5.7 ms short of the
+    // 100 ms gate, so the uplink ran at 5.30 fps -- half the configured rate -- while the CBR
+    // rate controller went on dividing the bitrate budget by 10 and the stream spent half its
+    // allowance (5.3 KB/s of a 10 KB/s budget). Any input rate between 1x and 2x the limit hits
+    // this.
+    // Accumulating credit at the target rate and spending one credit per emitted frame drops
+    // only the genuine surplus -- about one frame in seventeen at 10.6 in / 10 out -- and holds
+    // the long-run output at exactly the target for any input rate at or above it.
     const auto now = std::chrono::steady_clock::now();
-    const auto period = std::chrono::duration<double>(1.0 / scaled_max_fps_);
-    if (last_scaled_.time_since_epoch().count() != 0 &&
-        std::chrono::duration<double>(now - last_scaled_) < period)
+    if (last_scaled_.time_since_epoch().count() == 0)
     {
-      want_scaled = false;
+      scaled_credit_ = 1.0;  // let the first frame straight through
     }
     else
     {
-      last_scaled_ = now;
+      scaled_credit_ +=
+          std::chrono::duration<double>(now - last_scaled_).count() * scaled_max_fps_;
+      // Cap the catch-up burst: after a stall the encoder should resume at the target rate, not
+      // fire off every frame it "owes".
+      if (scaled_credit_ > 2.0)
+      {
+        scaled_credit_ = 2.0;
+      }
+    }
+    last_scaled_ = now;
+    if (scaled_credit_ >= 1.0)
+    {
+      scaled_credit_ -= 1.0;
+    }
+    else
+    {
+      want_scaled = false;
     }
   }
   if (!publish_main && !want_scaled)

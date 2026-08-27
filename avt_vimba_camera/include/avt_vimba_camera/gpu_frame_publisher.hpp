@@ -136,7 +136,10 @@ private:
   /// its whole bitrate budget several times over AND burn CPU proportionally, so it is rate
   /// limited independently of the full-rate stream perception consumes. 0 means every frame.
   double scaled_max_fps_{ 0.0 };
+  // Time the previous frame was SEEN (not emitted) plus accumulated emit credit: see the limiter
+  // in Publish() for why a gap-based test is not usable here.
   std::chrono::steady_clock::time_point last_scaled_{};
+  double scaled_credit_{ 0.0 };
 
   /// Same idea for the full-rate stream. YOLOv8 is inference bound well below the sensor rate
   /// (measured ~11.7 Hz of detections against 37.7 Hz of frames delivered), so publishing every

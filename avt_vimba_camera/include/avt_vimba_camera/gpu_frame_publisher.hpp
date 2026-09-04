@@ -94,6 +94,8 @@ public:
   /// Runtime toggle, wired to the node's 'enabled' parameter like the old encoder node's.
   void SetUplinkEnabled(bool enabled) { uplink_enabled_.store(enabled, std::memory_order_relaxed); }
 
+  void ReleasePinnedBuffers();
+
 private:
   bool Stage(const uint8_t* host_data, size_t bytes);
 

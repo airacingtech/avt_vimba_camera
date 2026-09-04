@@ -351,13 +351,19 @@ bool GpuFramePublisher::HasSubscribers()
   return has;
 }
 
-GpuFramePublisher::~GpuFramePublisher()
+void GpuFramePublisher::ReleasePinnedBuffers()
 {
   for (const void* p : pinned_)
   {
     cudaHostUnregister(const_cast<void*>(p));
   }
   pinned_.clear();
+  cudaGetLastError();
+}
+
+GpuFramePublisher::~GpuFramePublisher()
+{
+  ReleasePinnedBuffers();
 
   if (staging_ != nullptr)
   {

@@ -290,6 +290,10 @@ void AvtVimbaCamera::stopImaging()
   VmbErrorType err = vimba_camera_ptr_->StopContinuousImageAcquisition();
   if (err == VmbErrorSuccess)
   {
+    if (acquisition_stopped_callback_)
+    {
+      acquisition_stopped_callback_();
+    }
     diagnostic_msg_ = "Acquisition stopped";
     streaming_ = false;
     camera_state_ = IDLE;

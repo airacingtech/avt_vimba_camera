@@ -129,6 +129,12 @@ public:
     pcap_publish_callback_ = callback;
   }
 
+  typedef std::function<void()> acquisitionStoppedFunc;
+  void setAcquisitionStoppedCallback(acquisitionStoppedFunc callback)
+  {
+    acquisition_stopped_callback_ = callback;
+  }
+
 private:
   rclcpp::Node* nh_;
   rclcpp::Clock clock_;
@@ -201,6 +207,7 @@ private:
 
   frameCallbackFunc userFrameCallback;
   pcapPublishFunc pcap_publish_callback_;
+  acquisitionStoppedFunc acquisition_stopped_callback_;
   void frameCallback(const FramePtr vimba_frame_ptr);
 
   template <typename T>

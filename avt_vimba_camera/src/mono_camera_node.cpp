@@ -85,6 +85,12 @@ MonoCameraNode::MonoCameraNode(const rclcpp::NodeOptions& options) : Node("camer
         "~/image/nitros_scaled", static_cast<uint32_t>(scaled_long_edge_), scaled_max_fps_,
         main_max_fps_, profile_);
     RCLCPP_INFO(this->get_logger(), "Publishing NITROS device-memory frames on ~/image/nitros");
+    cam_.setAcquisitionStoppedCallback([this]() {
+      if (gpu_pub_ != nullptr)
+      {
+        gpu_pub_->ReleasePinnedBuffers();
+      }
+    });
     if (encode_uplink_)
     {
       gpu_pub_->ConfigureUplinkEncoder(uplink_config_, uplink_monochrome_, uplink_enabled_);

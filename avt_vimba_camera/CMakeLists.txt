@@ -15,6 +15,10 @@ find_package(camera_info_manager REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PCAP REQUIRED libpcap)
 
+set(USE_GPU "AUTO" CACHE STRING
+  "GPU path: AUTO/True builds it when this system can, REQUIRED demands it, False forces the CPU path")
+set_property(CACHE USE_GPU PROPERTY STRINGS AUTO True False REQUIRED)
+
 # Isaac ROS stays a build_depend so colcon still orders it ahead of this package, but it is taken
 # out of the list ament_auto sees. Two reasons, and the REQUIRED keyword only covers the first:
 #
@@ -28,36 +32,6 @@ pkg_check_modules(PCAP REQUIRED libpcap)
 # So the GPU packages are resolved only by the explicit probe below, and linked only by the
 # ament_target_dependencies() call on that path.
 ament_package_xml()
-set(AVT_VIMBA_CAMERA_OPTIONAL_DEPENDS
-  isaac_ros_gxf
-  isaac_ros_managed_nitros
-  isaac_ros_nitros_image_type
-)
-list(REMOVE_ITEM ${PROJECT_NAME}_BUILD_DEPENDS ${AVT_VIMBA_CAMERA_OPTIONAL_DEPENDS})
-
-ament_auto_find_build_dependencies(REQUIRED
-  ${${PROJECT_NAME}_BUILD_DEPENDS}
-  ${${PROJECT_NAME}_BUILDTOOL_DEPENDS}
-)
-
-# Isaac ROS alone decides whether the GPU frame path is built. A CUDA device is NOT enough and
-# must not be part of the decision: the GPU path publishes NITROS handles through the GXF runtime,
-# so a host with CUDA but no Isaac ROS -- or only part of it built -- has to produce the host-only
-# path. Every package that path uses is therefore required, isaac_ros_gxf included, because a
-# partial Isaac ROS build otherwise compiles a GPU path that cannot load at runtime.
-#
-# CUDA is then REQUIRED rather than probed: once this is the GPU path, a missing toolkit is a
-# broken workspace to report, not a reason to silently switch paths.
-#
-# ART_NITROS overrides the detection, because a verdict that cannot be overridden is impossible to
-# test: OFF exercises the host path on a machine that has the whole stack, and ON turns a
-# silent degrade on a machine that is SUPPOSED to have it into a build failure that says what is
-# missing. AUTO (the default) detects, which is what every normal build does.
-#
-#   colcon build --cmake-args -DART_NITROS=OFF
-set(ART_NITROS "AUTO" CACHE STRING
-  "NITROS/GPU path: AUTO detects Isaac ROS, ON requires it, OFF forces the host path")
-set_property(CACHE ART_NITROS PROPERTY STRINGS AUTO ON OFF)
 
 set(AVT_VIMBA_CAMERA_NITROS_DEPENDS
   isaac_ros_gxf
@@ -65,54 +39,163 @@ set(AVT_VIMBA_CAMERA_NITROS_DEPENDS
   isaac_ros_nitros_image_type
 )
 
-# Normalised so -DART_NITROS=0/false/OFF and =1/true/ON all mean what they look like.
-if(ART_NITROS STREQUAL "AUTO")
-  set(AVT_VIMBA_CAMERA_NITROS_MODE "AUTO")
-elseif(ART_NITROS)
-  set(AVT_VIMBA_CAMERA_NITROS_MODE "ON")
+list(REMOVE_ITEM ${PROJECT_NAME}_BUILD_DEPENDS ${AVT_VIMBA_CAMERA_NITROS_DEPENDS})
+
+ament_auto_find_build_dependencies(REQUIRED
+  ${${PROJECT_NAME}_BUILD_DEPENDS}
+  ${${PROJECT_NAME}_BUILDTOOL_DEPENDS}
+)
+
+string(TOUPPER "${USE_GPU}" AVT_USE_GPU)
+if(AVT_USE_GPU STREQUAL "REQUIRED")
+  set(AVT_VIMBA_CAMERA_GPU_MODE "REQUIRED")
+elseif(AVT_USE_GPU STREQUAL "AUTO")
+  set(AVT_VIMBA_CAMERA_GPU_MODE "AUTO")
+elseif(USE_GPU)
+  set(AVT_VIMBA_CAMERA_GPU_MODE "AUTO")
 else()
-  set(AVT_VIMBA_CAMERA_NITROS_MODE "OFF")
+  set(AVT_VIMBA_CAMERA_GPU_MODE "OFF")
 endif()
 
-set(AVT_VIMBA_CAMERA_NITROS_MISSING "")
-if(AVT_VIMBA_CAMERA_NITROS_MODE STREQUAL "OFF")
-  set(AVT_VIMBA_CAMERA_WITH_NITROS FALSE)
-else()
+set(AVT_VIMBA_CAMERA_WITH_NITROS FALSE)
+set(AVT_VIMBA_CAMERA_MISSING "")
+
+if(NOT AVT_VIMBA_CAMERA_GPU_MODE STREQUAL "OFF")
   set(AVT_VIMBA_CAMERA_WITH_NITROS TRUE)
-  foreach(dependency IN LISTS AVT_VIMBA_CAMERA_NITROS_DEPENDS)
-    find_package(${dependency} QUIET)
-    if(NOT ${dependency}_FOUND)
-      set(AVT_VIMBA_CAMERA_WITH_NITROS FALSE)
-      list(APPEND AVT_VIMBA_CAMERA_NITROS_MISSING ${dependency})
+
+  set(AVT_PREFIXES ${CMAKE_PREFIX_PATH})
+  foreach(avt_path_var AMENT_PREFIX_PATH CMAKE_PREFIX_PATH)
+    if(DEFINED ENV{${avt_path_var}})
+      string(REPLACE ":" ";" avt_split "$ENV{${avt_path_var}}")
+      list(APPEND AVT_PREFIXES ${avt_split})
+    endif()
+  endforeach()
+  if(AVT_PREFIXES)
+    list(REMOVE_DUPLICATES AVT_PREFIXES)
+  endif()
+
+  set(AVT_CUDA_MAJOR "")
+  find_program(AVT_READELF NAMES readelf eu-readelf)
+  mark_as_advanced(AVT_READELF)
+  foreach(avt_name isaac_ros_common isaac_ros_nitros isaac_ros_nitros_image_type)
+    foreach(avt_prefix IN LISTS AVT_PREFIXES)
+      set(avt_lib "${avt_prefix}/lib/lib${avt_name}.so")
+      if(AVT_CUDA_MAJOR OR NOT EXISTS "${avt_lib}")
+        continue()
+      endif()
+      set(avt_needed "")
+      if(AVT_READELF)
+        execute_process(COMMAND "${AVT_READELF}" -d "${avt_lib}"
+          OUTPUT_VARIABLE avt_needed ERROR_QUIET)
+      endif()
+      if(NOT avt_needed)
+        file(STRINGS "${avt_lib}" avt_needed REGEX "libcudart\\.so\\.[0-9]+" LIMIT_COUNT 4)
+      endif()
+      if(avt_needed MATCHES "libcudart\\.so\\.([0-9]+)")
+        set(AVT_CUDA_MAJOR "${CMAKE_MATCH_1}")
+        message(STATUS
+          "[avt_vimba_camera]: NITROS links libcudart.so.${AVT_CUDA_MAJOR} (${avt_lib})")
+      endif()
+    endforeach()
+  endforeach()
+
+  set(AVT_ROOTS "")
+  if(ART_CUDA_TOOLKIT_ROOT)
+    list(APPEND AVT_ROOTS "${ART_CUDA_TOOLKIT_ROOT}")
+  endif()
+  if(DEFINED ENV{CUDACXX})
+    get_filename_component(avt_bin "$ENV{CUDACXX}" DIRECTORY)
+    get_filename_component(avt_root "${avt_bin}" DIRECTORY)
+    list(APPEND AVT_ROOTS "${avt_root}")
+  endif()
+  file(GLOB AVT_INSTALLED "/usr/local/cuda-*")
+  list(SORT AVT_INSTALLED COMPARE NATURAL ORDER DESCENDING)
+  if(AVT_CUDA_MAJOR)
+    foreach(avt_root IN LISTS AVT_INSTALLED)
+      if(avt_root MATCHES "/usr/local/cuda-${AVT_CUDA_MAJOR}(\\.[0-9]+)?$")
+        list(APPEND AVT_ROOTS "${avt_root}")
+      endif()
+    endforeach()
+  endif()
+  list(APPEND AVT_ROOTS ${AVT_INSTALLED} "/usr/local/cuda")
+  find_program(AVT_NVCC_ON_PATH nvcc)
+  mark_as_advanced(AVT_NVCC_ON_PATH)
+  if(AVT_NVCC_ON_PATH)
+    get_filename_component(avt_bin "${AVT_NVCC_ON_PATH}" DIRECTORY)
+    get_filename_component(avt_root "${avt_bin}" DIRECTORY)
+    list(APPEND AVT_ROOTS "${avt_root}")
+  endif()
+  list(REMOVE_DUPLICATES AVT_ROOTS)
+
+  set(AVT_TOOLKIT "")
+  foreach(avt_root IN LISTS AVT_ROOTS)
+    if(AVT_TOOLKIT OR NOT EXISTS "${avt_root}/bin/nvcc")
+      continue()
+    endif()
+    execute_process(COMMAND "${avt_root}/bin/nvcc" --version
+      OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE avt_rc)
+    if(avt_rc EQUAL 0)
+      set(AVT_TOOLKIT "${avt_root}")
     endif()
   endforeach()
 
-  if(NOT AVT_VIMBA_CAMERA_WITH_NITROS AND AVT_VIMBA_CAMERA_NITROS_MODE STREQUAL "ON")
-    string(REPLACE ";" ", " AVT_VIMBA_CAMERA_NITROS_MISSING_TEXT
-      "${AVT_VIMBA_CAMERA_NITROS_MISSING}")
-    message(FATAL_ERROR
-      "[avt_vimba_camera]: ART_NITROS=ON was requested but Isaac ROS is incomplete here (missing "
-      "${AVT_VIMBA_CAMERA_NITROS_MISSING_TEXT}). Build those packages, or pass ART_NITROS=AUTO to "
-      "fall back to the host path instead of failing.")
+  if(AVT_TOOLKIT)
+    set(CUDAToolkit_ROOT "${AVT_TOOLKIT}")
+    set(CUDA_TOOLKIT_ROOT_DIR "${AVT_TOOLKIT}")
+    set(ENV{PATH} "${AVT_TOOLKIT}/bin:$ENV{PATH}")
+  else()
+    set(AVT_VIMBA_CAMERA_WITH_NITROS FALSE)
+    list(APPEND AVT_VIMBA_CAMERA_MISSING "a usable CUDA toolkit")
+  endif()
+
+  if(AVT_TOOLKIT)
+    foreach(avt_dep IN LISTS AVT_VIMBA_CAMERA_NITROS_DEPENDS)
+      find_package(${avt_dep} QUIET)
+      if(NOT ${avt_dep}_FOUND)
+        set(AVT_VIMBA_CAMERA_WITH_NITROS FALSE)
+        list(APPEND AVT_VIMBA_CAMERA_MISSING ${avt_dep})
+      endif()
+    endforeach()
+  endif()
+
+  if(AVT_VIMBA_CAMERA_WITH_NITROS)
+    find_package(CUDAToolkit QUIET)
+    if(NOT CUDAToolkit_FOUND)
+      set(AVT_VIMBA_CAMERA_WITH_NITROS FALSE)
+      list(APPEND AVT_VIMBA_CAMERA_MISSING "CUDAToolkit")
+    endif()
   endif()
 endif()
 
 if(AVT_VIMBA_CAMERA_WITH_NITROS)
   # Restored for ament_auto_package()'s dependency export, which reads FOUND_BUILD_DEPENDS.
   list(APPEND ${PROJECT_NAME}_FOUND_BUILD_DEPENDS ${AVT_VIMBA_CAMERA_NITROS_DEPENDS})
-  find_package(CUDAToolkit REQUIRED)
-  message(STATUS "[avt_vimba_camera]: Isaac ROS found, building the GPU frame path")
-elseif(AVT_VIMBA_CAMERA_NITROS_MODE STREQUAL "OFF")
   message(STATUS
-    "[avt_vimba_camera]: building the host-only frame path -- forced by ART_NITROS=OFF. Frames "
-    "stay on the host and are published as raw Bayer on ~/image.")
+    "[avt_vimba_camera]: GPU frame path -- CUDA ${CUDAToolkit_VERSION} at ${AVT_TOOLKIT}")
+  if(AVT_CUDA_MAJOR AND NOT CUDAToolkit_VERSION_MAJOR STREQUAL "${AVT_CUDA_MAJOR}")
+    message(WARNING
+      "[avt_vimba_camera]: NITROS links libcudart.so.${AVT_CUDA_MAJOR} but this builds against "
+      "CUDA ${CUDAToolkit_VERSION}, so both runtimes end up in the camera container and device "
+      "pointers cross between them. Install a CUDA ${AVT_CUDA_MAJOR}.x toolkit, or rebuild the "
+      "Isaac ROS stack against CUDA ${CUDAToolkit_VERSION_MAJOR}.")
+  endif()
 else()
-  string(REPLACE ";" ", " AVT_VIMBA_CAMERA_NITROS_MISSING_TEXT
-    "${AVT_VIMBA_CAMERA_NITROS_MISSING}")
-  message(STATUS
-    "[avt_vimba_camera]: building the host-only frame path -- Isaac ROS is incomplete here "
-    "(missing ${AVT_VIMBA_CAMERA_NITROS_MISSING_TEXT}). Frames stay on the host and are published "
-    "as raw Bayer on ~/image; a CUDA device does not change that, the GPU path needs GXF.")
+  string(REPLACE ";" ", " AVT_MISSING_TEXT "${AVT_VIMBA_CAMERA_MISSING}")
+  if(AVT_VIMBA_CAMERA_GPU_MODE STREQUAL "REQUIRED")
+    message(FATAL_ERROR
+      "[avt_vimba_camera]: USE_GPU=REQUIRED but this system cannot build the GPU path (missing "
+      "${AVT_MISSING_TEXT}). Build those packages, or set USE_GPU=True in race.env to fall back "
+      "to the host-only path instead of failing.")
+  elseif(AVT_VIMBA_CAMERA_GPU_MODE STREQUAL "OFF")
+    message(STATUS
+      "[avt_vimba_camera]: host-only frame path -- forced by USE_GPU=${USE_GPU}. Frames stay on "
+      "the host and are published as raw Bayer on ~/image.")
+  else()
+    message(STATUS
+      "[avt_vimba_camera]: host-only frame path -- this system is missing ${AVT_MISSING_TEXT}. "
+      "Frames stay on the host and are published as raw Bayer on ~/image; a CUDA device here does "
+      "not change that, the GPU path needs GXF.")
+  endif()
 endif()
 
 # Get architecture

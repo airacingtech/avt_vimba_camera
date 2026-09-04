@@ -42,6 +42,8 @@ using namespace std::placeholders;
 
 namespace avt_vimba_camera
 {
+constexpr int64_t kMinValidStampNs = 1577836800LL * 1000000000LL;
+
 // Non-owning node handle: the component container already owns this node, so an owning
 // shared_ptr here would give cam_ a second control block and delete the node from inside its
 // own destructor. AvtVimbaCamera takes `rclcpp::Node*` and keeps it as a raw `nh_`, which is
@@ -236,6 +238,17 @@ void MonoCameraNode::frameCallback(const FramePtr& vimba_frame_ptr)
   // Note: getCameraInfo() doesn't fill in header frame_id or stamp
   ci.header.frame_id = frame_id_;
   ci.header.stamp = ros_time;
+  if (use_measurement_time_)
+  {
+    VmbUint64_t frame_timestamp;
+    vimba_frame_ptr->GetTimestamp(frame_timestamp);
+    const int64_t ptp_ns = cam_.getTimestampNanos(frame_timestamp) +
+        static_cast<int64_t>(ptp_offset_) * 1000000000LL;
+    if (ptp_ns > kMinValidStampNs)
+    {
+      ci.header.stamp = rclcpp::Time(ptp_ns, RCL_ROS_TIME);
+    }
+  }
 
   publishFrame(ci, frame.data, frame.width, frame.height, frame.step, frame.encoding);
 }

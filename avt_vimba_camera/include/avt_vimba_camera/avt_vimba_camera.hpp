@@ -94,6 +94,7 @@ public:
 
   // Utility functions
   double getTimestampRealTime(VmbUint64_t timestamp_ticks);
+  int64_t getTimestampNanos(VmbUint64_t timestamp_ticks);
   bool isOpened()
   {
     return opened_;

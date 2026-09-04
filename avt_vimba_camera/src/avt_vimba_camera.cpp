@@ -518,6 +518,21 @@ double AvtVimbaCamera::getTimestampRealTime(VmbUint64_t timestamp_ticks)
   return (static_cast<double>(timestamp_ticks)) / (static_cast<double>(vimba_timestamp_tick_freq_));
 }
 
+int64_t AvtVimbaCamera::getTimestampNanos(VmbUint64_t timestamp_ticks)
+{
+  if (vimba_timestamp_tick_freq_ == 0)
+  {
+    return 0;
+  }
+  if (vimba_timestamp_tick_freq_ == 1000000000LL)
+  {
+    return static_cast<int64_t>(timestamp_ticks);
+  }
+  return static_cast<int64_t>(
+      static_cast<long double>(timestamp_ticks) * 1000000000.0L /
+      static_cast<long double>(vimba_timestamp_tick_freq_));
+}
+
 // Template function to SET a feature value from the camera
 template <typename T>
 VmbErrorType AvtVimbaCamera::setFeatureValue(const std::string& feature_str, const T& val)
